@@ -19,7 +19,7 @@ func aggregateModels(ctx context.Context, store *state.Store, proxy *executor.Pr
 	for _, source := range sources {
 		fetched, err := proxy.FetchModels(ctx, source)
 		if err != nil {
-			appendFallbackModel(&models, seen, source)
+			appendFallbackModels(&models, seen, source)
 			continue
 		}
 
@@ -97,20 +97,26 @@ func resolveModelSource(ctx context.Context, store *state.Store, proxy *executor
 	return state.ModelSource{}, err
 }
 
-func appendFallbackModel(models *[]state.ExposedModel, seen map[string]struct{}, source state.ModelSource) {
-	if source.DefaultModelID == "" {
-		return
-	}
-	if _, ok := seen[source.DefaultModelID]; ok {
-		return
+func appendFallbackModels(models *[]state.ExposedModel, seen map[string]struct{}, source state.ModelSource) {
+	appendIfAbsent := func(modelID string) {
+		if modelID == "" {
+			return
+		}
+		if _, ok := seen[modelID]; ok {
+			return
+		}
+		seen[modelID] = struct{}{}
+		*models = append(*models, state.ExposedModel{
+			ID:      modelID,
+			Object:  "model",
+			OwnedBy: source.ProviderType,
+		})
 	}
 
-	seen[source.DefaultModelID] = struct{}{}
-	*models = append(*models, state.ExposedModel{
-		ID:      source.DefaultModelID,
-		Object:  "model",
-		OwnedBy: source.ProviderType,
-	})
+	appendIfAbsent(source.DefaultModelID)
+	for _, modelID := range source.ExposedModelIDs {
+		appendIfAbsent(modelID)
+	}
 }
 
 func modelAllowed(selected []state.SelectedModel, modelID string) bool {

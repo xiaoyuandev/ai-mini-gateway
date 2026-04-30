@@ -91,6 +91,36 @@ func TestOpenAIProvider(t *testing.T) {
 			t.Fatalf("unexpected validation error: %+v", err)
 		}
 	})
+
+	t.Run("normalize upstream error", func(t *testing.T) {
+		got := provider.NormalizeUpstreamError(OperationOpenAIResponses, http.StatusBadGateway, map[string]any{})
+		if got.Code != "openai_responses_upstream_request_failed" {
+			t.Fatalf("unexpected code: %+v", got)
+		}
+		if got.Message != http.StatusText(http.StatusBadGateway) {
+			t.Fatalf("unexpected message: %+v", got)
+		}
+	})
+
+	t.Run("classify response", func(t *testing.T) {
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		}
+		classification := provider.ClassifyResponse(OperationOpenAIChatCompletions, resp)
+		if !classification.IsStream || classification.IsErrorJSON {
+			t.Fatalf("unexpected classification: %+v", classification)
+		}
+	})
+
+	t.Run("unsupported status", func(t *testing.T) {
+		if !provider.IsOperationUnsupported(OperationOpenAIChatCompletions, http.StatusNotFound) {
+			t.Fatal("expected 404 to be unsupported")
+		}
+		if provider.IsOperationUnsupported(OperationOpenAIChatCompletions, http.StatusBadGateway) {
+			t.Fatal("expected 502 not to be unsupported")
+		}
+	})
 }
 
 func TestAnthropicProvider(t *testing.T) {
@@ -163,6 +193,36 @@ func TestAnthropicProvider(t *testing.T) {
 		}
 		if err := provider.ValidateRequest(OperationAnthropicCountTokens, header); err != nil {
 			t.Fatalf("unexpected validation error: %+v", err)
+		}
+	})
+
+	t.Run("normalize upstream error", func(t *testing.T) {
+		got := provider.NormalizeUpstreamError(OperationAnthropicMessages, http.StatusTooManyRequests, map[string]any{
+			"error":   "rate_limited",
+			"message": "slow down",
+		})
+		if got.Code != "rate_limited" || got.Message != "slow down" {
+			t.Fatalf("unexpected error normalization: %+v", got)
+		}
+	})
+
+	t.Run("classify response", func(t *testing.T) {
+		resp := &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}
+		classification := provider.ClassifyResponse(OperationAnthropicMessages, resp)
+		if classification.IsStream || !classification.IsErrorJSON {
+			t.Fatalf("unexpected classification: %+v", classification)
+		}
+	})
+
+	t.Run("unsupported status", func(t *testing.T) {
+		if !provider.IsOperationUnsupported(OperationAnthropicMessages, http.StatusMethodNotAllowed) {
+			t.Fatal("expected 405 to be unsupported")
+		}
+		if provider.IsOperationUnsupported(OperationAnthropicMessages, http.StatusTooManyRequests) {
+			t.Fatal("expected 429 not to be unsupported")
 		}
 	})
 }

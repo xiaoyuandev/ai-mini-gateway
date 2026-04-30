@@ -20,6 +20,12 @@ func Apply(db *sql.DB) error {
 			model_id TEXT PRIMARY KEY,
 			position INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS model_source_exposed_models (
+			source_id TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			PRIMARY KEY (source_id, model_id)
+		)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
 	}
 

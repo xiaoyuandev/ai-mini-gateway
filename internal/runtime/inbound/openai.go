@@ -30,6 +30,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 	})
 
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		provider := providers.ForSource(state.ModelSource{ProviderType: "openai-compatible"})
 		body, req, err := decodeOpenAIChatRequest(r)
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -47,12 +48,11 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		if handled := web.WriteProxyOrError(w, resp); handled {
-			return
-		}
+		writeProviderResponse(w, provider, providers.OperationOpenAIChatCompletions, resp)
 	})
 
 	mux.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, r *http.Request) {
+		provider := providers.ForSource(state.ModelSource{ProviderType: "openai-compatible"})
 		body, req, err := decodeOpenAIResponseRequest(r)
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -70,9 +70,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		if handled := web.WriteProxyOrError(w, resp); handled {
-			return
-		}
+		writeProviderResponse(w, provider, providers.OperationOpenAIResponses, resp)
 	})
 }
 

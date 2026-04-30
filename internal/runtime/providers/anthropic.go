@@ -68,3 +68,41 @@ func (anthropicProvider) ValidateRequest(operation Operation, header http.Header
 	}
 	return nil
 }
+
+func (anthropicProvider) NormalizeUpstreamError(operation Operation, status int, payload map[string]any) ErrorResponse {
+	code := "anthropic_upstream_request_failed"
+	switch operation {
+	case OperationAnthropicMessages:
+		code = "anthropic_messages_upstream_request_failed"
+	case OperationAnthropicCountTokens:
+		code = "anthropic_count_tokens_upstream_request_failed"
+	case OperationModels:
+		code = "anthropic_models_upstream_request_failed"
+	}
+
+	message := http.StatusText(status)
+	if value, ok := payload["error"].(string); ok && strings.TrimSpace(value) != "" {
+		code = value
+	}
+	if value, ok := payload["message"].(string); ok && strings.TrimSpace(value) != "" {
+		message = value
+	}
+	return ErrorResponse{Code: code, Message: message}
+}
+
+func (anthropicProvider) ClassifyResponse(operation Operation, resp *http.Response) ResponseClassification {
+	contentType := resp.Header.Get("Content-Type")
+	return ResponseClassification{
+		IsErrorJSON: resp.StatusCode >= 400 && strings.Contains(contentType, "application/json"),
+		IsStream:    strings.Contains(contentType, "text/event-stream"),
+	}
+}
+
+func (anthropicProvider) IsOperationUnsupported(operation Operation, status int) bool {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
+}

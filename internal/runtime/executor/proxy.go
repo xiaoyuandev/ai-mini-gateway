@@ -30,10 +30,12 @@ type modelsEnvelope struct {
 }
 
 type modelsCacheEntry struct {
-	models      []state.ExposedModel
-	err         string
-	unsupported bool
-	expiresAt   time.Time
+	models          []state.ExposedModel
+	err             string
+	unsupported     bool
+	operationStatus map[providers.Operation]string
+	streamStatus    string
+	expiresAt       time.Time
 }
 
 func NewProxy() *Proxy {
@@ -71,7 +73,33 @@ func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path stri
 
 func (p *Proxy) ForwardOperation(ctx context.Context, source state.ModelSource, operation providers.Operation, incomingHeader http.Header, body []byte) (*http.Response, error) {
 	provider := providers.ForSource(source)
-	return p.Forward(ctx, source, provider.PathForOperation(operation), incomingHeader, body)
+	resp, err := p.Forward(ctx, source, provider.PathForOperation(operation), incomingHeader, body)
+	if err != nil {
+		p.setOperationStatus(source.ID, operation, "error")
+		return nil, err
+	}
+
+	switch {
+	case provider.IsOperationUnsupported(operation, resp.StatusCode):
+		p.setOperationStatus(source.ID, operation, "unsupported")
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		p.setOperationStatus(source.ID, operation, "supported")
+	default:
+		p.setOperationStatus(source.ID, operation, "error")
+	}
+
+	if requestAsksForStream(body) {
+		switch {
+		case resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream"):
+			p.setStreamStatus(source.ID, "supported")
+		case provider.IsOperationUnsupported(operation, resp.StatusCode):
+			p.setStreamStatus(source.ID, "unsupported")
+		default:
+			p.setStreamStatus(source.ID, "error")
+		}
+	}
+
+	return resp, nil
 }
 
 func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]state.ExposedModel, error) {
@@ -93,7 +121,7 @@ func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]st
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		if isModelsUnsupportedStatus(resp.StatusCode) {
+		if providers.ForSource(source).IsOperationUnsupported(providers.OperationModels, resp.StatusCode) {
 			p.setUnsupportedModels(source.ID)
 			return nil, ErrModelsUnsupported
 		}
@@ -168,8 +196,10 @@ func (p *Proxy) setCachedModels(sourceID string, models []state.ExposedModel, er
 	}
 
 	entry := modelsCacheEntry{
-		models:    cloneModels(models),
-		expiresAt: p.now().Add(p.modelsTTL),
+		models:          cloneModels(models),
+		operationStatus: p.currentOperationStatus(sourceID),
+		streamStatus:    p.currentStreamStatus(sourceID),
+		expiresAt:       p.now().Add(p.modelsTTL),
 	}
 	if err != nil {
 		entry.err = err.Error()
@@ -188,8 +218,10 @@ func (p *Proxy) setUnsupportedModels(sourceID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cache[sourceID] = modelsCacheEntry{
-		unsupported: true,
-		expiresAt:   p.now().Add(p.modelsTTL),
+		unsupported:     true,
+		operationStatus: p.currentOperationStatusLocked(sourceID),
+		streamStatus:    p.currentStreamStatusLocked(sourceID),
+		expiresAt:       p.now().Add(p.modelsTTL),
 	}
 }
 
@@ -208,14 +240,18 @@ func (p *Proxy) GetSourceCapabilities(source state.ModelSource) providers.Capabi
 	case entry.unsupported:
 		capabilities.SupportsModelsAPI = false
 		capabilities.ModelsAPIStatus = "unsupported"
-		return capabilities
 	case entry.err != "":
 		capabilities.ModelsAPIStatus = "error"
-		return capabilities
 	default:
 		capabilities.ModelsAPIStatus = "supported"
-		return capabilities
 	}
+
+	applyObservedOperationStatuses(&capabilities, entry.operationStatus)
+	if entry.streamStatus != "" {
+		capabilities.StreamStatus = entry.streamStatus
+		capabilities.SupportsStream = entry.streamStatus != "unsupported"
+	}
+	return capabilities
 }
 
 func cloneModels(models []state.ExposedModel) []state.ExposedModel {
@@ -241,13 +277,106 @@ func (p *Proxy) InvalidateModelsCache(sourceIDs ...string) {
 	}
 }
 
-func isModelsUnsupportedStatus(status int) bool {
-	switch status {
-	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		return true
-	default:
+func (p *Proxy) setOperationStatus(sourceID string, operation providers.Operation, status string) {
+	if p.modelsTTL <= 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry := p.cache[sourceID]
+	if entry.operationStatus == nil {
+		entry.operationStatus = map[providers.Operation]string{}
+	}
+	entry.operationStatus[operation] = status
+	entry.expiresAt = p.now().Add(p.modelsTTL)
+	p.cache[sourceID] = entry
+}
+
+func (p *Proxy) currentOperationStatus(sourceID string) map[providers.Operation]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.currentOperationStatusLocked(sourceID)
+}
+
+func (p *Proxy) currentOperationStatusLocked(sourceID string) map[providers.Operation]string {
+	entry, ok := p.cache[sourceID]
+	if !ok || len(entry.operationStatus) == 0 {
+		return nil
+	}
+	cloned := make(map[providers.Operation]string, len(entry.operationStatus))
+	for key, value := range entry.operationStatus {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (p *Proxy) setStreamStatus(sourceID string, status string) {
+	if p.modelsTTL <= 0 {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry := p.cache[sourceID]
+	entry.streamStatus = status
+	entry.expiresAt = p.now().Add(p.modelsTTL)
+	p.cache[sourceID] = entry
+}
+
+func (p *Proxy) currentStreamStatus(sourceID string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.currentStreamStatusLocked(sourceID)
+}
+
+func (p *Proxy) currentStreamStatusLocked(sourceID string) string {
+	entry, ok := p.cache[sourceID]
+	if !ok {
+		return ""
+	}
+	return entry.streamStatus
+}
+
+func applyObservedOperationStatuses(capabilities *providers.Capabilities, statuses map[providers.Operation]string) {
+	for operation, status := range statuses {
+		switch operation {
+		case providers.OperationOpenAIChatCompletions:
+			capabilities.OpenAIChatCompletionsStatus = status
+			capabilities.SupportsOpenAIChatCompletions = status != "unsupported"
+		case providers.OperationOpenAIResponses:
+			capabilities.OpenAIResponsesStatus = status
+			capabilities.SupportsOpenAIResponses = status != "unsupported"
+		case providers.OperationAnthropicMessages:
+			capabilities.AnthropicMessagesStatus = status
+			capabilities.SupportsAnthropicMessages = status != "unsupported"
+			if status == "supported" {
+				capabilities.StreamStatus = "supported"
+			}
+		case providers.OperationAnthropicCountTokens:
+			capabilities.AnthropicCountTokensStatus = status
+			capabilities.SupportsAnthropicCountTokens = status != "unsupported"
+		}
+	}
+
+	if statuses[providers.OperationOpenAIChatCompletions] == "supported" || statuses[providers.OperationOpenAIResponses] == "supported" {
+		capabilities.StreamStatus = "supported"
+	}
+}
+
+func requestAsksForStream(body []byte) bool {
+	if len(body) == 0 {
 		return false
 	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	stream, _ := payload["stream"].(bool)
+	return stream
 }
 
 type httpBody interface {

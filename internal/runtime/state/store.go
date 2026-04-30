@@ -39,25 +39,27 @@ type credentialsState struct {
 }
 
 type ModelSource struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	ProviderType   string `json:"provider_type"`
-	DefaultModelID string `json:"default_model_id"`
-	Enabled        bool   `json:"enabled"`
-	Position       int    `json:"position"`
-	APIKey         string `json:"api_key"`
-	APIKeyMasked   string `json:"api_key_masked"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	BaseURL         string   `json:"base_url"`
+	ProviderType    string   `json:"provider_type"`
+	DefaultModelID  string   `json:"default_model_id"`
+	ExposedModelIDs []string `json:"exposed_model_ids"`
+	Enabled         bool     `json:"enabled"`
+	Position        int      `json:"position"`
+	APIKey          string   `json:"api_key"`
+	APIKeyMasked    string   `json:"api_key_masked"`
 }
 
 type ModelSourceUpsertRequest struct {
-	Name           string `json:"name"`
-	BaseURL        string `json:"base_url"`
-	ProviderType   string `json:"provider_type"`
-	DefaultModelID string `json:"default_model_id"`
-	Enabled        bool   `json:"enabled"`
-	Position       int    `json:"position"`
-	APIKey         string `json:"api_key"`
+	Name            string   `json:"name"`
+	BaseURL         string   `json:"base_url"`
+	ProviderType    string   `json:"provider_type"`
+	DefaultModelID  string   `json:"default_model_id"`
+	ExposedModelIDs []string `json:"exposed_model_ids"`
+	Enabled         bool     `json:"enabled"`
+	Position        int      `json:"position"`
+	APIKey          string   `json:"api_key"`
 }
 
 type ModelSourceOrderItem struct {
@@ -100,10 +102,10 @@ func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSo
 	}
 
 	for _, source := range sources {
-		if source.DefaultModelID != modelID {
+		if source.ProviderType != providerType {
 			continue
 		}
-		if source.ProviderType != providerType {
+		if source.DefaultModelID != modelID && !slices.Contains(source.ExposedModelIDs, modelID) {
 			continue
 		}
 		return source, nil
@@ -176,15 +178,19 @@ func (s *Store) CreateModelSource(ctx context.Context, req ModelSourceUpsertRequ
 	defer tx.Rollback()
 
 	source := ModelSource{
-		ID:             newID("src"),
-		Name:           req.Name,
-		BaseURL:        req.BaseURL,
-		ProviderType:   req.ProviderType,
-		DefaultModelID: req.DefaultModelID,
-		Enabled:        req.Enabled,
+		ID:              newID("src"),
+		Name:            req.Name,
+		BaseURL:         req.BaseURL,
+		ProviderType:    req.ProviderType,
+		DefaultModelID:  req.DefaultModelID,
+		ExposedModelIDs: sanitizeModelIDs(req.ExposedModelIDs),
+		Enabled:         req.Enabled,
 	}
 
 	if err := insertModelSource(ctx, tx, source); err != nil {
+		return ModelSource{}, err
+	}
+	if err := replaceExposedModels(ctx, tx, source.ID, source.ExposedModelIDs); err != nil {
 		return ModelSource{}, err
 	}
 	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
@@ -237,6 +243,9 @@ func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourc
 	if rowsAffected == 0 {
 		return ModelSource{}, ErrNotFound
 	}
+	if err := replaceExposedModels(ctx, tx, id, sanitizeModelIDs(req.ExposedModelIDs)); err != nil {
+		return ModelSource{}, err
+	}
 
 	s.credentials.APIKeys[id] = strings.TrimSpace(req.APIKey)
 	if err := s.persistCredentialsLocked(); err != nil {
@@ -276,11 +285,23 @@ func (s *Store) DeleteModelSource(ctx context.Context, id string) error {
 	if rowsAffected == 0 {
 		return ErrNotFound
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM model_source_exposed_models WHERE source_id = ?`, id); err != nil {
+		return err
+	}
 
 	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM selected_models WHERE model_id NOT IN (SELECT default_model_id FROM model_sources WHERE enabled = 1)`); err != nil {
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM selected_models
+		WHERE model_id NOT IN (
+			SELECT default_model_id FROM model_sources WHERE enabled = 1
+			UNION
+			SELECT esm.model_id
+			FROM model_source_exposed_models esm
+			JOIN model_sources ms ON ms.id = esm.source_id
+			WHERE ms.enabled = 1
+		)`); err != nil {
 		return err
 	}
 
@@ -399,10 +420,10 @@ func (s *Store) ListModels() []ExposedModel {
 
 	fallback := make([]ExposedModel, 0, len(sources))
 	for _, source := range sources {
-		if !source.Enabled || strings.TrimSpace(source.DefaultModelID) == "" {
+		if !source.Enabled {
 			continue
 		}
-		fallback = appendIfModelVisible(fallback, seen, source.DefaultModelID, []ModelSource{source})
+		fallback = appendFallbackModels(fallback, seen, source)
 	}
 	return fallback
 }
@@ -447,6 +468,11 @@ func (s *Store) getModelSource(ctx context.Context, id string) (ModelSource, err
 	}
 
 	source.Enabled = enabled != 0
+	exposedModelIDs, err := listExposedModels(ctx, s.db, source.ID)
+	if err != nil {
+		return ModelSource{}, err
+	}
+	source.ExposedModelIDs = exposedModelIDs
 	return source, nil
 }
 
@@ -520,7 +546,17 @@ func listModelSourcesTx(ctx context.Context, db queryer) ([]ModelSource, error) 
 		item.Enabled = enabled != 0
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range items {
+		exposedModelIDs, err := listExposedModels(ctx, db, items[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		items[i].ExposedModelIDs = exposedModelIDs
+	}
+	return items, nil
 }
 
 func normalizeModelSourcePositions(ctx context.Context, tx *sql.Tx) error {
@@ -534,6 +570,41 @@ func normalizeModelSourcePositions(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func replaceExposedModels(ctx context.Context, tx *sql.Tx, sourceID string, modelIDs []string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM model_source_exposed_models WHERE source_id = ?`, sourceID); err != nil {
+		return err
+	}
+	for i, modelID := range modelIDs {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO model_source_exposed_models(source_id, model_id, position) VALUES(?, ?, ?)`, sourceID, modelID, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func listExposedModels(ctx context.Context, db queryer, sourceID string) ([]string, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT model_id
+		FROM model_source_exposed_models
+		WHERE source_id = ?
+		ORDER BY position ASC
+	`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var modelIDs []string
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			return nil, err
+		}
+		modelIDs = append(modelIDs, modelID)
+	}
+	return modelIDs, rows.Err()
 }
 
 func (s *Store) persistCredentialsLocked() error {
@@ -555,10 +626,42 @@ func validateModelSourceRequest(req ModelSourceUpsertRequest) error {
 
 	switch strings.TrimSpace(req.ProviderType) {
 	case "openai-compatible", "anthropic-compatible":
+		seen := map[string]struct{}{}
+		for _, modelID := range sanitizeModelIDs(req.ExposedModelIDs) {
+			if _, ok := seen[modelID]; ok {
+				return ErrConflict
+			}
+			seen[modelID] = struct{}{}
+		}
 		return nil
 	default:
 		return ErrInvalidInput
 	}
+}
+
+func appendFallbackModels(items []ExposedModel, seen map[string]struct{}, source ModelSource) []ExposedModel {
+	if strings.TrimSpace(source.DefaultModelID) != "" {
+		items = appendIfModelVisible(items, seen, source.DefaultModelID, []ModelSource{source})
+	}
+	for _, modelID := range source.ExposedModelIDs {
+		items = appendIfModelVisible(items, seen, modelID, []ModelSource{source})
+	}
+	return items
+}
+
+func sanitizeModelIDs(modelIDs []string) []string {
+	if len(modelIDs) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		result = append(result, modelID)
+	}
+	return result
 }
 
 func appendIfModelVisible(items []ExposedModel, seen map[string]struct{}, modelID string, sources []ModelSource) []ExposedModel {

@@ -32,20 +32,22 @@ func TestRuntimeContract(t *testing.T) {
 		t.Fatalf("create model source: %v", err)
 	}
 	_, err = store.CreateModelSource(t.Context(), state.ModelSourceUpsertRequest{
-		Name:           "Anthropic",
-		BaseURL:        "https://anthropic.example/v1",
-		ProviderType:   "anthropic-compatible",
-		DefaultModelID: "claude-3-7-sonnet",
-		Enabled:        true,
-		APIKey:         "sk-ant-test",
+		Name:            "Anthropic",
+		BaseURL:         "https://anthropic.example/v1",
+		ProviderType:    "anthropic-compatible",
+		DefaultModelID:  "claude-3-7-sonnet",
+		ExposedModelIDs: []string{"claude-3-haiku"},
+		Enabled:         true,
+		APIKey:          "sk-ant-test",
 	})
 	if err != nil {
 		t.Fatalf("create anthropic source: %v", err)
 	}
 	if err := store.ReplaceSelectedModels(t.Context(), []state.SelectedModel{
 		{ModelID: "claude-3-7-sonnet", Position: 0},
-		{ModelID: "gpt-4.1-mini", Position: 1},
-		{ModelID: "gpt-upstream-error", Position: 2},
+		{ModelID: "claude-3-haiku", Position: 1},
+		{ModelID: "gpt-4.1-mini", Position: 2},
+		{ModelID: "gpt-upstream-error", Position: 3},
 	}); err != nil {
 		t.Fatalf("replace selected models: %v", err)
 	}
@@ -160,7 +162,7 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
 		}
-		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-upstream-error\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
+		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"claude-3-haiku\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-upstream-error\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
 			t.Fatalf("unexpected body: %q", got)
 		}
 	})
@@ -305,6 +307,20 @@ func TestRuntimeContract(t *testing.T) {
 		}
 	})
 
+	t.Run("anthropic exposed fallback model", func(t *testing.T) {
+		body := []byte(`{"model":"claude-3-haiku","messages":[{"role":"user","content":"hello"}],"max_tokens":128}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("x-request-id", "trace-anthropic")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("anthropic count tokens", func(t *testing.T) {
 		body := []byte(`{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", bytes.NewReader(body))
@@ -354,6 +370,33 @@ func TestRuntimeContract(t *testing.T) {
 		}
 		if got := rec.Body.String(); got != "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n" {
 			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
+	t.Run("dynamic operation capability status observed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/model-sources/capabilities", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload[0]["openai_chat_completions_status"] != "supported" {
+			t.Fatalf("unexpected openai dynamic status: %+v", payload[0])
+		}
+		if payload[0]["stream_status"] != "supported" {
+			t.Fatalf("unexpected openai stream status: %+v", payload[0])
+		}
+		if payload[1]["anthropic_messages_status"] != "supported" {
+			t.Fatalf("unexpected anthropic dynamic status: %+v", payload[1])
+		}
+		if payload[1]["stream_status"] != "supported" {
+			t.Fatalf("unexpected anthropic stream status: %+v", payload[1])
 		}
 	})
 

@@ -37,12 +37,25 @@ type Provider interface {
 	PathForOperation(operation Operation) string
 	ShouldForwardHeader(key string) bool
 	ValidateRequest(operation Operation, header http.Header) *ValidationError
+	NormalizeUpstreamError(operation Operation, status int, payload map[string]any) ErrorResponse
+	ClassifyResponse(operation Operation, resp *http.Response) ResponseClassification
+	IsOperationUnsupported(operation Operation, status int) bool
 }
 
 type ValidationError struct {
 	Status  int
 	Code    string
 	Message string
+}
+
+type ErrorResponse struct {
+	Code    string
+	Message string
+}
+
+type ResponseClassification struct {
+	IsErrorJSON bool
+	IsStream    bool
 }
 
 func ForSource(source state.ModelSource) Provider {

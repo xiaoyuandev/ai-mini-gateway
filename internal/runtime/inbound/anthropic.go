@@ -44,9 +44,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		if handled := web.WriteProxyOrError(w, resp); handled {
-			return
-		}
+		writeProviderResponse(w, provider, providers.OperationAnthropicMessages, resp)
 	})
 
 	mux.HandleFunc("POST /v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -73,9 +71,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		if handled := web.WriteProxyOrError(w, resp); handled {
-			return
-		}
+		writeProviderResponse(w, provider, providers.OperationAnthropicCountTokens, resp)
 	})
 }
 

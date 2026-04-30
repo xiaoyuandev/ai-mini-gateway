@@ -58,3 +58,41 @@ func (openAIProvider) ShouldForwardHeader(key string) bool {
 func (openAIProvider) ValidateRequest(operation Operation, header http.Header) *ValidationError {
 	return nil
 }
+
+func (openAIProvider) NormalizeUpstreamError(operation Operation, status int, payload map[string]any) ErrorResponse {
+	code := "openai_upstream_request_failed"
+	switch operation {
+	case OperationOpenAIResponses:
+		code = "openai_responses_upstream_request_failed"
+	case OperationOpenAIChatCompletions:
+		code = "openai_chat_completions_upstream_request_failed"
+	case OperationModels:
+		code = "openai_models_upstream_request_failed"
+	}
+
+	message := http.StatusText(status)
+	if value, ok := payload["error"].(string); ok && strings.TrimSpace(value) != "" {
+		code = value
+	}
+	if value, ok := payload["message"].(string); ok && strings.TrimSpace(value) != "" {
+		message = value
+	}
+	return ErrorResponse{Code: code, Message: message}
+}
+
+func (openAIProvider) ClassifyResponse(operation Operation, resp *http.Response) ResponseClassification {
+	contentType := resp.Header.Get("Content-Type")
+	return ResponseClassification{
+		IsErrorJSON: resp.StatusCode >= 400 && strings.Contains(contentType, "application/json"),
+		IsStream:    strings.Contains(contentType, "text/event-stream"),
+	}
+}
+
+func (openAIProvider) IsOperationUnsupported(operation Operation, status int) bool {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
+}
