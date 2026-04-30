@@ -54,3 +54,7 @@ func (openAIProvider) ShouldForwardHeader(key string) bool {
 		return true
 	}
 }
+
+func (openAIProvider) ValidateRequest(operation Operation, header http.Header) *ValidationError {
+	return nil
+}

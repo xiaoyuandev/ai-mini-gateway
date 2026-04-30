@@ -54,3 +54,17 @@ func (anthropicProvider) ShouldForwardHeader(key string) bool {
 		return true
 	}
 }
+
+func (anthropicProvider) ValidateRequest(operation Operation, header http.Header) *ValidationError {
+	switch operation {
+	case OperationAnthropicMessages, OperationAnthropicCountTokens:
+		if header.Get("anthropic-version") == "" {
+			return &ValidationError{
+				Status:  http.StatusBadRequest,
+				Code:    "missing_header",
+				Message: "anthropic-version header is required",
+			}
+		}
+	}
+	return nil
+}

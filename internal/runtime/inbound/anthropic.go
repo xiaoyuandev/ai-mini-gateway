@@ -21,8 +21,9 @@ type anthropicCountTokensRequest struct {
 
 func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("anthropic-version") == "" {
-			web.WriteError(w, http.StatusBadRequest, "missing_header", "anthropic-version header is required")
+		provider := providers.ForSource(state.ModelSource{ProviderType: "anthropic-compatible"})
+		if validationErr := provider.ValidateRequest(providers.OperationAnthropicMessages, r.Header); validationErr != nil {
+			web.WriteError(w, validationErr.Status, validationErr.Code, validationErr.Message)
 			return
 		}
 
@@ -49,8 +50,9 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 	})
 
 	mux.HandleFunc("POST /v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("anthropic-version") == "" {
-			web.WriteError(w, http.StatusBadRequest, "missing_header", "anthropic-version header is required")
+		provider := providers.ForSource(state.ModelSource{ProviderType: "anthropic-compatible"})
+		if validationErr := provider.ValidateRequest(providers.OperationAnthropicCountTokens, r.Header); validationErr != nil {
+			web.WriteError(w, validationErr.Status, validationErr.Code, validationErr.Message)
 			return
 		}
 

@@ -85,6 +85,12 @@ func TestOpenAIProvider(t *testing.T) {
 			t.Fatalf("unexpected stream capabilities: %+v", caps)
 		}
 	})
+
+	t.Run("validate request", func(t *testing.T) {
+		if err := provider.ValidateRequest(OperationOpenAIChatCompletions, http.Header{}); err != nil {
+			t.Fatalf("unexpected validation error: %+v", err)
+		}
+	})
 }
 
 func TestAnthropicProvider(t *testing.T) {
@@ -142,6 +148,21 @@ func TestAnthropicProvider(t *testing.T) {
 		}
 		if !caps.SupportsStream || caps.StreamStatus != "configured_supported" {
 			t.Fatalf("unexpected stream capabilities: %+v", caps)
+		}
+	})
+
+	t.Run("validate request", func(t *testing.T) {
+		if err := provider.ValidateRequest(OperationAnthropicMessages, http.Header{}); err == nil {
+			t.Fatal("expected missing anthropic-version validation error")
+		}
+
+		header := http.Header{}
+		header.Set("anthropic-version", "2023-06-01")
+		if err := provider.ValidateRequest(OperationAnthropicMessages, header); err != nil {
+			t.Fatalf("unexpected validation error: %+v", err)
+		}
+		if err := provider.ValidateRequest(OperationAnthropicCountTokens, header); err != nil {
+			t.Fatalf("unexpected validation error: %+v", err)
 		}
 	})
 }

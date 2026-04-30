@@ -36,6 +36,13 @@ type Provider interface {
 	DefaultCapabilities() Capabilities
 	PathForOperation(operation Operation) string
 	ShouldForwardHeader(key string) bool
+	ValidateRequest(operation Operation, header http.Header) *ValidationError
+}
+
+type ValidationError struct {
+	Status  int
+	Code    string
+	Message string
 }
 
 func ForSource(source state.ModelSource) Provider {
