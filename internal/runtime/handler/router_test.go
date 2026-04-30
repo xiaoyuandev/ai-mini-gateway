@@ -65,6 +65,14 @@ func TestRuntimeContract(t *testing.T) {
 					},
 				})
 			case "https://openai.example/v1/chat/completions":
+				if req.Header.Get("x-trace-id") != "trace-openai" {
+					rec.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(rec).Encode(map[string]any{
+						"error":   "missing_header",
+						"message": "x-trace-id missing",
+					})
+					return rec.Result(), nil
+				}
 				var payload map[string]any
 				_ = json.NewDecoder(req.Body).Decode(&payload)
 				if model, _ := payload["model"].(string); model == "gpt-upstream-error" {
@@ -86,6 +94,14 @@ func TestRuntimeContract(t *testing.T) {
 			case "https://openai.example/v1/responses":
 				_ = json.NewEncoder(rec).Encode(map[string]any{"id": "resp-test", "object": "response"})
 			case "https://anthropic.example/v1/messages":
+				if req.Header.Get("x-request-id") != "trace-anthropic" {
+					rec.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(rec).Encode(map[string]any{
+						"error":   "missing_header",
+						"message": "x-request-id missing",
+					})
+					return rec.Result(), nil
+				}
 				var payload map[string]any
 				_ = json.NewDecoder(req.Body).Decode(&payload)
 				if stream, _ := payload["stream"].(bool); stream {
@@ -196,10 +212,30 @@ func TestRuntimeContract(t *testing.T) {
 		if len(payload) != 2 {
 			t.Fatalf("unexpected payload length: %d", len(payload))
 		}
-		if payload[0]["name"] != "OpenAI" || payload[0]["models_api_status"] != "supported" || payload[0]["supports_models_api"] != true {
+		if payload[0]["name"] != "OpenAI" ||
+			payload[0]["models_api_status"] != "supported" ||
+			payload[0]["supports_models_api"] != true ||
+			payload[0]["supports_openai_chat_completions"] != true ||
+			payload[0]["openai_chat_completions_status"] != "configured_supported" ||
+			payload[0]["supports_openai_responses"] != true ||
+			payload[0]["openai_responses_status"] != "configured_supported" ||
+			payload[0]["supports_anthropic_messages"] != false ||
+			payload[0]["supports_anthropic_count_tokens"] != false ||
+			payload[0]["supports_stream"] != true ||
+			payload[0]["stream_status"] != "configured_supported" {
 			t.Fatalf("unexpected first capability row: %+v", payload[0])
 		}
-		if payload[1]["name"] != "Anthropic" || payload[1]["models_api_status"] != "unsupported" || payload[1]["supports_models_api"] != false {
+		if payload[1]["name"] != "Anthropic" ||
+			payload[1]["models_api_status"] != "unsupported" ||
+			payload[1]["supports_models_api"] != false ||
+			payload[1]["supports_openai_chat_completions"] != false ||
+			payload[1]["supports_openai_responses"] != false ||
+			payload[1]["supports_anthropic_messages"] != true ||
+			payload[1]["anthropic_messages_status"] != "configured_supported" ||
+			payload[1]["supports_anthropic_count_tokens"] != true ||
+			payload[1]["anthropic_count_tokens_status"] != "configured_supported" ||
+			payload[1]["supports_stream"] != true ||
+			payload[1]["stream_status"] != "configured_supported" {
 			t.Fatalf("unexpected second capability row: %+v", payload[1])
 		}
 	})
@@ -245,6 +281,7 @@ func TestRuntimeContract(t *testing.T) {
 	t.Run("chat completions", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("x-trace-id", "trace-openai")
 		rec := httptest.NewRecorder()
 
 		router.ServeHTTP(rec, req)
@@ -258,6 +295,7 @@ func TestRuntimeContract(t *testing.T) {
 		body := []byte(`{"model":"claude-3-7-sonnet","messages":[{"role":"user","content":"hello"}],"max_tokens":128}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("x-request-id", "trace-anthropic")
 		rec := httptest.NewRecorder()
 
 		router.ServeHTTP(rec, req)
@@ -283,6 +321,7 @@ func TestRuntimeContract(t *testing.T) {
 	t.Run("chat completions stream", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-4.1-mini","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("x-trace-id", "trace-openai")
 		rec := httptest.NewRecorder()
 
 		router.ServeHTTP(rec, req)
@@ -302,6 +341,7 @@ func TestRuntimeContract(t *testing.T) {
 		body := []byte(`{"model":"claude-3-7-sonnet","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":128}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
 		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("x-request-id", "trace-anthropic")
 		rec := httptest.NewRecorder()
 
 		router.ServeHTTP(rec, req)
@@ -320,6 +360,7 @@ func TestRuntimeContract(t *testing.T) {
 	t.Run("upstream json error mapped", func(t *testing.T) {
 		body := []byte(`{"model":"gpt-upstream-error","messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("x-trace-id", "trace-openai")
 		rec := httptest.NewRecorder()
 
 		router.ServeHTTP(rec, req)

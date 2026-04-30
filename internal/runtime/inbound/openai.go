@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/providers"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/web"
 )
@@ -41,7 +42,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			return
 		}
 
-		resp, err := proxy.Forward(r.Context(), source, "/chat/completions", r.Header, body)
+		resp, err := proxy.ForwardOperation(r.Context(), source, providers.OperationOpenAIChatCompletions, r.Header, body)
 		if err != nil {
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
@@ -64,7 +65,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			return
 		}
 
-		resp, err := proxy.Forward(r.Context(), source, "/responses", r.Header, body)
+		resp, err := proxy.ForwardOperation(r.Context(), source, providers.OperationOpenAIResponses, r.Header, body)
 		if err != nil {
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return

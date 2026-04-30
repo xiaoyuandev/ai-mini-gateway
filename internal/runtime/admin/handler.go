@@ -19,13 +19,23 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 		sources := store.ListModelSources()
 		response := make([]map[string]any, 0, len(sources))
 		for _, source := range sources {
-			capabilities := proxy.GetSourceCapabilities(source.ID)
+			capabilities := proxy.GetSourceCapabilities(source)
 			response = append(response, map[string]any{
-				"id":                  source.ID,
-				"name":                source.Name,
-				"provider_type":       source.ProviderType,
-				"supports_models_api": capabilities.SupportsModelsAPI,
-				"models_api_status":   capabilities.ModelsAPIStatus,
+				"id":                               source.ID,
+				"name":                             source.Name,
+				"provider_type":                    source.ProviderType,
+				"supports_models_api":              capabilities.SupportsModelsAPI,
+				"models_api_status":                capabilities.ModelsAPIStatus,
+				"supports_openai_chat_completions": capabilities.SupportsOpenAIChatCompletions,
+				"openai_chat_completions_status":   capabilities.OpenAIChatCompletionsStatus,
+				"supports_openai_responses":        capabilities.SupportsOpenAIResponses,
+				"openai_responses_status":          capabilities.OpenAIResponsesStatus,
+				"supports_anthropic_messages":      capabilities.SupportsAnthropicMessages,
+				"anthropic_messages_status":        capabilities.AnthropicMessagesStatus,
+				"supports_anthropic_count_tokens":  capabilities.SupportsAnthropicCountTokens,
+				"anthropic_count_tokens_status":    capabilities.AnthropicCountTokensStatus,
+				"supports_stream":                  capabilities.SupportsStream,
+				"stream_status":                    capabilities.StreamStatus,
 			})
 		}
 		web.WriteJSON(w, http.StatusOK, response)

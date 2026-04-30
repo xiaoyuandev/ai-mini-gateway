@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/providers"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
 
@@ -23,11 +24,6 @@ type Proxy struct {
 }
 
 var ErrModelsUnsupported = errors.New("models_api_unsupported")
-
-type SourceCapabilities struct {
-	SupportsModelsAPI bool   `json:"supports_models_api"`
-	ModelsAPIStatus   string `json:"models_api_status"`
-}
 
 type modelsEnvelope struct {
 	Data []state.ExposedModel `json:"data"`
@@ -58,12 +54,13 @@ func NewProxyWithClientAndTTL(client *http.Client, ttl time.Duration) *Proxy {
 }
 
 func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path string, incomingHeader http.Header, body []byte) (*http.Response, error) {
+	provider := providers.ForSource(source)
 	req, err := newUpstreamRequest(ctx, http.MethodPost, source, path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
-	copyHeader(req.Header, incomingHeader)
+	copyHeader(req.Header, incomingHeader, provider)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -72,12 +69,17 @@ func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path stri
 	return resp, nil
 }
 
+func (p *Proxy) ForwardOperation(ctx context.Context, source state.ModelSource, operation providers.Operation, incomingHeader http.Header, body []byte) (*http.Response, error) {
+	provider := providers.ForSource(source)
+	return p.Forward(ctx, source, provider.PathForOperation(operation), incomingHeader, body)
+}
+
 func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]state.ExposedModel, error) {
 	if models, err, ok := p.getCachedModels(source.ID); ok {
 		return models, err
 	}
 
-	req, err := newUpstreamRequest(ctx, http.MethodGet, source, "/models", nil)
+	req, err := newUpstreamRequest(ctx, http.MethodGet, source, providers.ForSource(source).PathForOperation(providers.OperationModels), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -120,32 +122,18 @@ func newUpstreamRequest(ctx context.Context, method string, source state.ModelSo
 	if err != nil {
 		return nil, err
 	}
-	applyAuthHeader(req.Header, source)
+	providers.ForSource(source).ApplyAuthHeader(req.Header, source)
 	return req, nil
 }
 
-func copyHeader(dst http.Header, src http.Header) {
+func copyHeader(dst http.Header, src http.Header, provider providers.Provider) {
 	for key, values := range src {
-		switch http.CanonicalHeaderKey(key) {
-		case "Host", "Content-Length":
+		if !provider.ShouldForwardHeader(key) {
 			continue
 		}
 		for _, value := range values {
 			dst.Add(key, value)
 		}
-	}
-}
-
-func applyAuthHeader(header http.Header, source state.ModelSource) {
-	if source.APIKey == "" {
-		return
-	}
-
-	if header.Get("Authorization") == "" && source.ProviderType == "openai-compatible" {
-		header.Set("Authorization", "Bearer "+source.APIKey)
-	}
-	if header.Get("x-api-key") == "" && source.ProviderType == "anthropic-compatible" {
-		header.Set("x-api-key", source.APIKey)
 	}
 }
 
@@ -205,34 +193,28 @@ func (p *Proxy) setUnsupportedModels(sourceID string) {
 	}
 }
 
-func (p *Proxy) GetSourceCapabilities(sourceID string) SourceCapabilities {
+func (p *Proxy) GetSourceCapabilities(source state.ModelSource) providers.Capabilities {
+	capabilities := providers.ForSource(source).DefaultCapabilities()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	entry, ok := p.cache[sourceID]
+	entry, ok := p.cache[source.ID]
 	if !ok || p.now().After(entry.expiresAt) {
-		return SourceCapabilities{
-			SupportsModelsAPI: true,
-			ModelsAPIStatus:   "unknown",
-		}
+		return capabilities
 	}
 
 	switch {
 	case entry.unsupported:
-		return SourceCapabilities{
-			SupportsModelsAPI: false,
-			ModelsAPIStatus:   "unsupported",
-		}
+		capabilities.SupportsModelsAPI = false
+		capabilities.ModelsAPIStatus = "unsupported"
+		return capabilities
 	case entry.err != "":
-		return SourceCapabilities{
-			SupportsModelsAPI: true,
-			ModelsAPIStatus:   "error",
-		}
+		capabilities.ModelsAPIStatus = "error"
+		return capabilities
 	default:
-		return SourceCapabilities{
-			SupportsModelsAPI: true,
-			ModelsAPIStatus:   "supported",
-		}
+		capabilities.ModelsAPIStatus = "supported"
+		return capabilities
 	}
 }
 

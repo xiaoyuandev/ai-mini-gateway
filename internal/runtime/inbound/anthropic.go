@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/providers"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/web"
 )
@@ -37,7 +38,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			return
 		}
 
-		resp, err := proxy.Forward(r.Context(), source, "/messages", r.Header, body)
+		resp, err := proxy.ForwardOperation(r.Context(), source, providers.OperationAnthropicMessages, r.Header, body)
 		if err != nil {
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
@@ -65,7 +66,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			return
 		}
 
-		resp, err := proxy.Forward(r.Context(), source, "/messages/count_tokens", r.Header, body)
+		resp, err := proxy.ForwardOperation(r.Context(), source, providers.OperationAnthropicCountTokens, r.Header, body)
 		if err != nil {
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
