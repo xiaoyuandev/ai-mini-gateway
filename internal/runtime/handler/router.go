@@ -22,7 +22,7 @@ func NewRouterWithProxy(store *state.Store, proxy *executor.Proxy) http.Handler 
 	health.Register(mux, store)
 	inbound.RegisterOpenAI(mux, store, proxy)
 	inbound.RegisterAnthropic(mux, store, proxy)
-	admin.Register(mux, store)
+	admin.Register(mux, store, proxy)
 
 	return loggingMiddleware(mux)
 }

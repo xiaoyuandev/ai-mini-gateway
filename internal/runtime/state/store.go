@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -279,6 +280,9 @@ func (s *Store) DeleteModelSource(ctx context.Context, id string) error {
 	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM selected_models WHERE model_id NOT IN (SELECT default_model_id FROM model_sources WHERE enabled = 1)`); err != nil {
+		return err
+	}
 
 	delete(s.credentials.APIKeys, id)
 	if err := s.persistCredentialsLocked(); err != nil {
@@ -337,10 +341,16 @@ func (s *Store) ListSelectedModels() []SelectedModel {
 }
 
 func (s *Store) ReplaceSelectedModels(ctx context.Context, models []SelectedModel) error {
+	seen := map[string]struct{}{}
 	for _, model := range models {
-		if strings.TrimSpace(model.ModelID) == "" {
+		modelID := strings.TrimSpace(model.ModelID)
+		if modelID == "" {
 			return ErrInvalidInput
 		}
+		if _, ok := seen[modelID]; ok {
+			return ErrConflict
+		}
+		seen[modelID] = struct{}{}
 	}
 
 	s.mu.Lock()
@@ -537,7 +547,18 @@ func validateModelSourceRequest(req ModelSourceUpsertRequest) error {
 		strings.TrimSpace(req.DefaultModelID) == "" {
 		return ErrInvalidInput
 	}
-	return nil
+
+	parsed, err := url.Parse(strings.TrimSpace(req.BaseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ErrInvalidInput
+	}
+
+	switch strings.TrimSpace(req.ProviderType) {
+	case "openai-compatible", "anthropic-compatible":
+		return nil
+	default:
+		return ErrInvalidInput
+	}
 }
 
 func appendIfModelVisible(items []ExposedModel, seen map[string]struct{}, modelID string, sources []ModelSource) []ExposedModel {

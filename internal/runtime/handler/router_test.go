@@ -12,6 +12,8 @@ import (
 )
 
 func TestRuntimeContract(t *testing.T) {
+	modelsHits := map[string]int{}
+
 	dir := t.TempDir()
 	store, err := state.NewStore(dir)
 	if err != nil {
@@ -43,6 +45,7 @@ func TestRuntimeContract(t *testing.T) {
 	if err := store.ReplaceSelectedModels(t.Context(), []state.SelectedModel{
 		{ModelID: "claude-3-7-sonnet", Position: 0},
 		{ModelID: "gpt-4.1-mini", Position: 1},
+		{ModelID: "gpt-upstream-error", Position: 2},
 	}); err != nil {
 		t.Fatalf("replace selected models: %v", err)
 	}
@@ -53,15 +56,26 @@ func TestRuntimeContract(t *testing.T) {
 
 			switch req.URL.String() {
 			case "https://openai.example/v1/models":
+				modelsHits["openai"]++
 				_ = json.NewEncoder(rec).Encode(map[string]any{
 					"data": []map[string]any{
 						{"id": "gpt-4.1", "object": "model", "owned_by": "openai-compatible"},
 						{"id": "gpt-4.1-mini", "object": "model", "owned_by": "openai-compatible"},
+						{"id": "gpt-upstream-error", "object": "model", "owned_by": "openai-compatible"},
 					},
 				})
 			case "https://openai.example/v1/chat/completions":
 				var payload map[string]any
 				_ = json.NewDecoder(req.Body).Decode(&payload)
+				if model, _ := payload["model"].(string); model == "gpt-upstream-error" {
+					rec.Header().Set("Content-Type", "application/json")
+					rec.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(rec).Encode(map[string]any{
+						"error":   "rate_limited",
+						"message": "quota exceeded",
+					})
+					return rec.Result(), nil
+				}
 				if stream, _ := payload["stream"].(bool); stream {
 					rec.Header().Set("Content-Type", "text/event-stream")
 					_, _ = rec.WriteString("data: {\"id\":\"chunk-1\"}\n\n")
@@ -82,6 +96,7 @@ func TestRuntimeContract(t *testing.T) {
 				}
 				_ = json.NewEncoder(rec).Encode(map[string]any{"id": "msg_test", "type": "message"})
 			case "https://anthropic.example/v1/models":
+				modelsHits["anthropic"]++
 				rec.WriteHeader(http.StatusNotFound)
 			case "https://anthropic.example/v1/messages/count_tokens":
 				_ = json.NewEncoder(rec).Encode(map[string]any{"input_tokens": 3})
@@ -115,8 +130,65 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
 		}
-		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
+		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-upstream-error\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
 			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
+	t.Run("models cache reused", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d", rec.Code)
+		}
+		if modelsHits["openai"] != 1 {
+			t.Fatalf("expected openai models fetched once, got %d", modelsHits["openai"])
+		}
+		if modelsHits["anthropic"] != 1 {
+			t.Fatalf("expected anthropic models fetched once, got %d", modelsHits["anthropic"])
+		}
+	})
+
+	t.Run("unsupported models capability cached", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d", rec.Code)
+		}
+		if modelsHits["anthropic"] != 1 {
+			t.Fatalf("expected unsupported anthropic /models not to be retried, got %d", modelsHits["anthropic"])
+		}
+	})
+
+	t.Run("admin write invalidates models cache", func(t *testing.T) {
+		body := []byte(`{"name":"Extra","base_url":"https://extra.example/v1","provider_type":"openai-compatible","default_model_id":"gpt-extra","enabled":true,"api_key":"sk-extra"}`)
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+
+		modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		modelsRec := httptest.NewRecorder()
+		router.ServeHTTP(modelsRec, modelsReq)
+
+		if modelsRec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", modelsRec.Code, modelsRec.Body.String())
+		}
+		if modelsHits["openai"] != 2 {
+			t.Fatalf("expected openai models fetched twice after invalidation, got %d", modelsHits["openai"])
+		}
+		if modelsHits["anthropic"] != 2 {
+			t.Fatalf("expected anthropic models fetched twice after invalidation, got %d", modelsHits["anthropic"])
 		}
 	})
 
@@ -204,6 +276,45 @@ func TestRuntimeContract(t *testing.T) {
 		}
 		if got := rec.Body.String(); got != "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n" {
 			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
+	t.Run("upstream json error mapped", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-upstream-error","messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "{\"error\":\"rate_limited\",\"message\":\"quota exceeded\"}\n" {
+			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
+	t.Run("selected models admin duplicate rejected", func(t *testing.T) {
+		body := []byte(`[{"model_id":"gpt-4.1-mini","position":0},{"model_id":"gpt-4.1-mini","position":1}]`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/selected-models", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("model source admin invalid provider rejected", func(t *testing.T) {
+		body := []byte(`{"name":"Bad","base_url":"https://bad.example/v1","provider_type":"custom","default_model_id":"x","enabled":true,"api_key":"sk-test"}`)
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 		}
 	})
 }

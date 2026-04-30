@@ -5,11 +5,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/web"
 )
 
-func Register(mux *http.ServeMux, store *state.Store) {
+func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 	mux.HandleFunc("GET /admin/model-sources", func(w http.ResponseWriter, r *http.Request) {
 		web.WriteJSON(w, http.StatusOK, store.ListModelSources())
 	})
@@ -27,6 +28,7 @@ func Register(mux *http.ServeMux, store *state.Store) {
 			return
 		}
 
+		proxy.InvalidateModelsCache()
 		web.WriteJSON(w, http.StatusCreated, source)
 	})
 
@@ -42,6 +44,7 @@ func Register(mux *http.ServeMux, store *state.Store) {
 			return
 		}
 
+		proxy.InvalidateModelsCache()
 		web.WriteJSON(w, http.StatusOK, store.ListModelSources())
 	})
 
@@ -66,6 +69,7 @@ func Register(mux *http.ServeMux, store *state.Store) {
 				return
 			}
 
+			proxy.InvalidateModelsCache(id)
 			web.WriteJSON(w, http.StatusOK, source)
 		case http.MethodDelete:
 			if err := store.DeleteModelSource(r.Context(), id); err != nil {
@@ -73,6 +77,7 @@ func Register(mux *http.ServeMux, store *state.Store) {
 				return
 			}
 
+			proxy.InvalidateModelsCache(id)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			web.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "unsupported method")

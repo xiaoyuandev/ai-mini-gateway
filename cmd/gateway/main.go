@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/config"
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/handler"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
@@ -23,9 +24,11 @@ func main() {
 		log.Fatalf("initialize runtime state: %v", err)
 	}
 
+	proxy := executor.NewProxyWithClientAndTTL(&http.Client{Timeout: 5 * time.Minute}, cfg.ModelsCacheTTL)
+
 	srv := &http.Server{
 		Addr:              cfg.Address(),
-		Handler:           handler.NewRouter(store),
+		Handler:           handler.NewRouterWithProxy(store, proxy),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

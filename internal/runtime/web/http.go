@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func WriteJSON(w http.ResponseWriter, status int, payload any) {
@@ -84,4 +85,28 @@ func WriteProxyResponse(w http.ResponseWriter, resp *http.Response) {
 		}
 		return
 	}
+}
+
+func WriteProxyOrError(w http.ResponseWriter, resp *http.Response) bool {
+	contentType := resp.Header.Get("Content-Type")
+	if resp.StatusCode >= 400 && strings.Contains(contentType, "application/json") {
+		defer resp.Body.Close()
+
+		var payload map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err == nil {
+			errorCode := "upstream_request_failed"
+			if value, ok := payload["error"].(string); ok && strings.TrimSpace(value) != "" {
+				errorCode = value
+			}
+			message := http.StatusText(resp.StatusCode)
+			if value, ok := payload["message"].(string); ok && strings.TrimSpace(value) != "" {
+				message = value
+			}
+			WriteError(w, resp.StatusCode, errorCode, message)
+			return true
+		}
+	}
+
+	WriteProxyResponse(w, resp)
+	return false
 }
