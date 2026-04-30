@@ -2,6 +2,7 @@ package providers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
@@ -66,5 +67,25 @@ func ForSource(source state.ModelSource) Provider {
 		fallthrough
 	default:
 		return openAIProvider{}
+	}
+}
+
+func shouldForwardDefaultHeader(key string) bool {
+	switch strings.ToLower(key) {
+	case "host",
+		"content-length",
+		"authorization",
+		"x-api-key",
+		"connection",
+		"keep-alive",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"te",
+		"trailer",
+		"transfer-encoding",
+		"upgrade":
+		return false
+	default:
+		return true
 	}
 }

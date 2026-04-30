@@ -23,6 +23,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize runtime state: %v", err)
 	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Printf("close runtime state: %v", err)
+		}
+	}()
 
 	proxy := executor.NewProxyWithClientAndTTL(&http.Client{Timeout: 5 * time.Minute}, cfg.ModelsCacheTTL)
 

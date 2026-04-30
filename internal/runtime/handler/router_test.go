@@ -21,12 +21,13 @@ func TestRuntimeContract(t *testing.T) {
 	}
 
 	_, err = store.CreateModelSource(t.Context(), state.ModelSourceUpsertRequest{
-		Name:           "OpenAI",
-		BaseURL:        "https://openai.example/v1",
-		ProviderType:   "openai-compatible",
-		DefaultModelID: "gpt-4.1",
-		Enabled:        true,
-		APIKey:         "sk-test",
+		Name:            "OpenAI",
+		BaseURL:         "https://openai.example/v1",
+		ProviderType:    "openai-compatible",
+		DefaultModelID:  "gpt-4.1",
+		ExposedModelIDs: []string{"gpt-4.1-mini", "gpt-upstream-error"},
+		Enabled:         true,
+		APIKey:          "sk-test",
 	})
 	if err != nil {
 		t.Fatalf("create model source: %v", err)

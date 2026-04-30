@@ -84,12 +84,13 @@ func (s *Store) ListEnabledModelSources() ([]ModelSource, error) {
 		return nil, err
 	}
 
+	apiKeys := s.apiKeysSnapshot()
 	result := make([]ModelSource, 0, len(sources))
 	for _, source := range sources {
 		if !source.Enabled {
 			continue
 		}
-		source.APIKey = s.credentials.APIKeys[source.ID]
+		source.APIKey = apiKeys[source.ID]
 		result = append(result, source)
 	}
 	return result, nil
@@ -145,6 +146,10 @@ func NewStore(dataDir string) (*Store, error) {
 	}
 
 	return store, nil
+}
+
+func (s *Store) Close() error {
+	return s.db.Close()
 }
 
 func (s *Store) Ping(ctx context.Context) error {
@@ -377,6 +382,16 @@ func (s *Store) ReplaceSelectedModels(ctx context.Context, models []SelectedMode
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	availableModelIDs, err := listAvailableModelIDsTx(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	for _, model := range models {
+		if _, ok := availableModelIDs[model.ModelID]; !ok {
+			return ErrInvalidInput
+		}
+	}
+
 	next := append([]SelectedModel(nil), models...)
 	slices.SortFunc(next, func(a, b SelectedModel) int { return a.Position - b.Position })
 
@@ -607,8 +622,40 @@ func listExposedModels(ctx context.Context, db queryer, sourceID string) ([]stri
 	return modelIDs, rows.Err()
 }
 
+func listAvailableModelIDsTx(ctx context.Context, db queryer) (map[string]struct{}, error) {
+	sources, err := listModelSourcesTx(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	modelIDs := map[string]struct{}{}
+	for _, source := range sources {
+		if strings.TrimSpace(source.DefaultModelID) != "" {
+			modelIDs[source.DefaultModelID] = struct{}{}
+		}
+		for _, modelID := range source.ExposedModelIDs {
+			if strings.TrimSpace(modelID) == "" {
+				continue
+			}
+			modelIDs[modelID] = struct{}{}
+		}
+	}
+	return modelIDs, nil
+}
+
 func (s *Store) persistCredentialsLocked() error {
 	return writeJSONFile(s.credsPath, s.credentials)
+}
+
+func (s *Store) apiKeysSnapshot() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make(map[string]string, len(s.credentials.APIKeys))
+	for key, value := range s.credentials.APIKeys {
+		result[key] = value
+	}
+	return result
 }
 
 func validateModelSourceRequest(req ModelSourceUpsertRequest) error {

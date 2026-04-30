@@ -52,6 +52,29 @@ func TestStoreReplaceSelectedModelsRejectsDuplicates(t *testing.T) {
 	}
 }
 
+func TestStoreReplaceSelectedModelsRejectsUnknownModel(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.CreateModelSource(t.Context(), ModelSourceUpsertRequest{
+		Name:           "OpenAI",
+		BaseURL:        "https://api.openai.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        true,
+		APIKey:         "sk-openai",
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	err = store.ReplaceSelectedModels(t.Context(), []SelectedModel{
+		{ModelID: "does-not-exist", Position: 0},
+	})
+	if err != ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
 func TestDeleteModelSourceRemovesOrphanedSelectedModels(t *testing.T) {
 	store := newTestStore(t)
 

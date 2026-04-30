@@ -47,12 +47,7 @@ func (anthropicProvider) PathForOperation(operation Operation) string {
 }
 
 func (anthropicProvider) ShouldForwardHeader(key string) bool {
-	switch strings.ToLower(key) {
-	case "host", "content-length":
-		return false
-	default:
-		return true
-	}
+	return shouldForwardDefaultHeader(key)
 }
 
 func (anthropicProvider) ValidateRequest(operation Operation, header http.Header) *ValidationError {

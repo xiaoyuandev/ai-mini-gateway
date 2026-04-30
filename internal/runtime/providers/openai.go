@@ -47,12 +47,7 @@ func (openAIProvider) PathForOperation(operation Operation) string {
 }
 
 func (openAIProvider) ShouldForwardHeader(key string) bool {
-	switch strings.ToLower(key) {
-	case "host", "content-length":
-		return false
-	default:
-		return true
-	}
+	return shouldForwardDefaultHeader(key)
 }
 
 func (openAIProvider) ValidateRequest(operation Operation, header http.Header) *ValidationError {

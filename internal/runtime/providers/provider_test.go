@@ -68,6 +68,12 @@ func TestOpenAIProvider(t *testing.T) {
 		if provider.ShouldForwardHeader("Content-Length") {
 			t.Fatal("content-length should not be forwarded")
 		}
+		if provider.ShouldForwardHeader("Authorization") {
+			t.Fatal("authorization should not be forwarded")
+		}
+		if provider.ShouldForwardHeader("Connection") {
+			t.Fatal("connection should not be forwarded")
+		}
 		if !provider.ShouldForwardHeader("x-trace-id") {
 			t.Fatal("custom headers should be forwarded")
 		}
@@ -162,6 +168,12 @@ func TestAnthropicProvider(t *testing.T) {
 		}
 		if provider.ShouldForwardHeader("Content-Length") {
 			t.Fatal("content-length should not be forwarded")
+		}
+		if provider.ShouldForwardHeader("x-api-key") {
+			t.Fatal("x-api-key should not be forwarded")
+		}
+		if provider.ShouldForwardHeader("Transfer-Encoding") {
+			t.Fatal("transfer-encoding should not be forwarded")
 		}
 		if !provider.ShouldForwardHeader("x-request-id") {
 			t.Fatal("custom headers should be forwarded")
