@@ -24,6 +24,11 @@ type Proxy struct {
 
 var ErrModelsUnsupported = errors.New("models_api_unsupported")
 
+type SourceCapabilities struct {
+	SupportsModelsAPI bool   `json:"supports_models_api"`
+	ModelsAPIStatus   string `json:"models_api_status"`
+}
+
 type modelsEnvelope struct {
 	Data []state.ExposedModel `json:"data"`
 }
@@ -197,6 +202,37 @@ func (p *Proxy) setUnsupportedModels(sourceID string) {
 	p.cache[sourceID] = modelsCacheEntry{
 		unsupported: true,
 		expiresAt:   p.now().Add(p.modelsTTL),
+	}
+}
+
+func (p *Proxy) GetSourceCapabilities(sourceID string) SourceCapabilities {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.cache[sourceID]
+	if !ok || p.now().After(entry.expiresAt) {
+		return SourceCapabilities{
+			SupportsModelsAPI: true,
+			ModelsAPIStatus:   "unknown",
+		}
+	}
+
+	switch {
+	case entry.unsupported:
+		return SourceCapabilities{
+			SupportsModelsAPI: false,
+			ModelsAPIStatus:   "unsupported",
+		}
+	case entry.err != "":
+		return SourceCapabilities{
+			SupportsModelsAPI: true,
+			ModelsAPIStatus:   "error",
+		}
+	default:
+		return SourceCapabilities{
+			SupportsModelsAPI: true,
+			ModelsAPIStatus:   "supported",
+		}
 	}
 }
 

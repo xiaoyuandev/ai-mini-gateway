@@ -15,6 +15,22 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 		web.WriteJSON(w, http.StatusOK, store.ListModelSources())
 	})
 
+	mux.HandleFunc("GET /admin/model-sources/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		sources := store.ListModelSources()
+		response := make([]map[string]any, 0, len(sources))
+		for _, source := range sources {
+			capabilities := proxy.GetSourceCapabilities(source.ID)
+			response = append(response, map[string]any{
+				"id":                  source.ID,
+				"name":                source.Name,
+				"provider_type":       source.ProviderType,
+				"supports_models_api": capabilities.SupportsModelsAPI,
+				"models_api_status":   capabilities.ModelsAPIStatus,
+			})
+		}
+		web.WriteJSON(w, http.StatusOK, response)
+	})
+
 	mux.HandleFunc("POST /admin/model-sources", func(w http.ResponseWriter, r *http.Request) {
 		var req state.ModelSourceUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

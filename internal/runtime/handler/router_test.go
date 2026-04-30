@@ -121,6 +121,20 @@ func TestRuntimeContract(t *testing.T) {
 		}
 	})
 
+	t.Run("capabilities", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/capabilities", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != "{\"supports_admin_api\":true,\"supports_anthropic_compatible\":true,\"supports_model_source_admin\":true,\"supports_models_api\":true,\"supports_openai_compatible\":true,\"supports_selected_model_admin\":true,\"supports_stream\":true}\n" {
+			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
 	t.Run("models", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		rec := httptest.NewRecorder()
@@ -163,6 +177,30 @@ func TestRuntimeContract(t *testing.T) {
 		}
 		if modelsHits["anthropic"] != 1 {
 			t.Fatalf("expected unsupported anthropic /models not to be retried, got %d", modelsHits["anthropic"])
+		}
+	})
+
+	t.Run("model source capabilities", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/admin/model-sources/capabilities", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if len(payload) != 2 {
+			t.Fatalf("unexpected payload length: %d", len(payload))
+		}
+		if payload[0]["name"] != "OpenAI" || payload[0]["models_api_status"] != "supported" || payload[0]["supports_models_api"] != true {
+			t.Fatalf("unexpected first capability row: %+v", payload[0])
+		}
+		if payload[1]["name"] != "Anthropic" || payload[1]["models_api_status"] != "unsupported" || payload[1]["supports_models_api"] != false {
+			t.Fatalf("unexpected second capability row: %+v", payload[1])
 		}
 	})
 
