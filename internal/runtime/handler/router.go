@@ -6,17 +6,22 @@ import (
 	"time"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/admin"
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/health"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/inbound"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
 
 func NewRouter(store *state.Store) http.Handler {
+	return NewRouterWithProxy(store, executor.NewProxy())
+}
+
+func NewRouterWithProxy(store *state.Store, proxy *executor.Proxy) http.Handler {
 	mux := http.NewServeMux()
 
 	health.Register(mux, store)
-	inbound.RegisterOpenAI(mux, store)
-	inbound.RegisterAnthropic(mux, store)
+	inbound.RegisterOpenAI(mux, store, proxy)
+	inbound.RegisterAnthropic(mux, store, proxy)
 	admin.Register(mux, store)
 
 	return loggingMiddleware(mux)

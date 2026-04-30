@@ -47,3 +47,17 @@ func WriteDoneSSE(w http.ResponseWriter) {
 		flusher.Flush()
 	}
 }
+
+func WriteProxyResponse(w http.ResponseWriter, status int, header http.Header, body []byte) {
+	for key, values := range header {
+		switch http.CanonicalHeaderKey(key) {
+		case "Content-Length", "Transfer-Encoding", "Connection":
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+}

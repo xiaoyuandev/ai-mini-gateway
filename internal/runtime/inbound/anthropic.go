@@ -2,66 +2,47 @@ package inbound
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/web"
 )
 
 type anthropicMessageRequest struct {
-	Model     string                    `json:"model"`
-	Stream    bool                      `json:"stream"`
-	MaxTokens int                       `json:"max_tokens"`
-	Messages  []anthropicMessageContent `json:"messages"`
-}
-
-type anthropicMessageContent struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Model string `json:"model"`
 }
 
 type anthropicCountTokensRequest struct {
-	Model    string                    `json:"model"`
-	Messages []anthropicMessageContent `json:"messages"`
+	Model string `json:"model"`
 }
 
-func RegisterAnthropic(mux *http.ServeMux, store *state.Store) {
+func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("anthropic-version") == "" {
 			web.WriteError(w, http.StatusBadRequest, "missing_header", "anthropic-version header is required")
 			return
 		}
 
-		var req anthropicMessageRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, req, err := decodeAnthropicMessageRequest(r)
+		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}
 
-		if err := store.ValidateModel(req.Model); err != nil {
+		source, err := store.ResolveModelSource(req.Model, "anthropic-compatible")
+		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return
 		}
 
-		text := composeAnthropicReply(req.Messages)
-		if req.Stream {
-			streamAnthropicMessage(w, req.Model, text)
+		resp, err := proxy.Forward(r.Context(), source, "/messages", r.Header, body)
+		if err != nil {
+			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-
-		web.WriteJSON(w, http.StatusOK, map[string]any{
-			"id":    "msg_stub",
-			"type":  "message",
-			"role":  "assistant",
-			"model": req.Model,
-			"content": []any{
-				map[string]any{
-					"type": "text",
-					"text": text,
-				},
-			},
-			"stop_reason": "end_turn",
-		})
+		web.WriteProxyResponse(w, resp.StatusCode, resp.Header, resp.Body)
 	})
 
 	mux.HandleFunc("POST /v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
@@ -70,61 +51,43 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store) {
 			return
 		}
 
-		var req anthropicCountTokensRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		body, req, err := decodeAnthropicCountTokensRequest(r)
+		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}
 
-		if err := store.ValidateModel(req.Model); err != nil {
+		source, err := store.ResolveModelSource(req.Model, "anthropic-compatible")
+		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return
 		}
 
-		web.WriteJSON(w, http.StatusOK, map[string]any{
-			"input_tokens": estimateTokensFromAnthropic(req.Messages),
-		})
+		resp, err := proxy.Forward(r.Context(), source, "/messages/count_tokens", r.Header, body)
+		if err != nil {
+			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
+			return
+		}
+		web.WriteProxyResponse(w, resp.StatusCode, resp.Header, resp.Body)
 	})
 }
 
-func composeAnthropicReply(messages []anthropicMessageContent) string {
-	if len(messages) == 0 {
-		return "gateway runtime is ready"
+func decodeAnthropicMessageRequest(r *http.Request) ([]byte, anthropicMessageRequest, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, anthropicMessageRequest{}, err
 	}
-
-	last := messages[len(messages)-1].Content
-	if last == "" {
-		return "gateway received an empty prompt"
-	}
-
-	return "echo: " + last
+	var req anthropicMessageRequest
+	err = json.Unmarshal(body, &req)
+	return body, req, err
 }
 
-func estimateTokensFromAnthropic(messages []anthropicMessageContent) int {
-	total := 0
-	for _, message := range messages {
-		total += len(message.Content)
+func decodeAnthropicCountTokensRequest(r *http.Request) ([]byte, anthropicCountTokensRequest, error) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, anthropicCountTokensRequest{}, err
 	}
-
-	if total == 0 {
-		return 0
-	}
-
-	return (total + 3) / 4
-}
-
-func streamAnthropicMessage(w http.ResponseWriter, model string, text string) {
-	web.WriteSSEHeaders(w)
-	web.WriteNamedSSE(w, "message_start", map[string]any{
-		"type":    "message_start",
-		"message": map[string]any{"id": "msg_stub", "model": model, "role": "assistant"},
-	})
-	web.WriteNamedSSE(w, "content_block_delta", map[string]any{
-		"type":  "content_block_delta",
-		"index": 0,
-		"delta": map[string]any{"type": "text_delta", "text": text},
-	})
-	web.WriteNamedSSE(w, "message_stop", map[string]any{
-		"type": "message_stop",
-	})
+	var req anthropicCountTokensRequest
+	err = json.Unmarshal(body, &req)
+	return body, req, err
 }

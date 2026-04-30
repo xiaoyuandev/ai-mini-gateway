@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,10 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	_ "modernc.org/sqlite"
+
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/migration"
 )
 
 var (
@@ -21,19 +26,11 @@ var (
 )
 
 type Store struct {
-	mu          sync.RWMutex
-	dataDir     string
-	statePath   string
+	mu          sync.Mutex
+	db          *sql.DB
+	dbPath      string
 	credsPath   string
-	versionPath string
-	data        persistedState
 	credentials credentialsState
-}
-
-type persistedState struct {
-	ModelSources   []ModelSource   `json:"model_sources"`
-	SelectedModels []SelectedModel `json:"selected_models"`
-	Meta           map[string]any  `json:"meta"`
 }
 
 type credentialsState struct {
@@ -78,62 +75,91 @@ type ExposedModel struct {
 	OwnedBy string `json:"owned_by"`
 }
 
+func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSource, error) {
+	sources, err := s.listModelSources(context.Background())
+	if err != nil {
+		return ModelSource{}, err
+	}
+
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		if source.DefaultModelID != modelID {
+			continue
+		}
+		if source.ProviderType != providerType {
+			continue
+		}
+		source.APIKey = s.credentials.APIKeys[source.ID]
+		return source, nil
+	}
+
+	return ModelSource{}, ErrNotFound
+}
+
 func NewStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 
-	s := &Store{
-		dataDir:     dataDir,
-		statePath:   filepath.Join(dataDir, "state.json"),
-		credsPath:   filepath.Join(dataDir, "credentials.json"),
-		versionPath: filepath.Join(dataDir, "schema-version.json"),
-		data: persistedState{
-			ModelSources:   []ModelSource{},
-			SelectedModels: []SelectedModel{},
-			Meta:           map[string]any{"storage_backend": "json-file"},
-		},
+	dbPath := filepath.Join(dataDir, "gateway.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database: %w", err)
+	}
+
+	if err := migration.Apply(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply sqlite migration: %w", err)
+	}
+
+	store := &Store{
+		db:        db,
+		dbPath:    dbPath,
+		credsPath: filepath.Join(dataDir, "credentials.json"),
 		credentials: credentialsState{
 			APIKeys: map[string]string{},
 		},
 	}
 
-	if err := s.load(); err != nil {
-		return nil, err
+	if err := loadJSONFile(store.credsPath, &store.credentials); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("load credentials: %w", err)
 	}
-	if err := s.ensureVersionFile(); err != nil {
-		return nil, err
-	}
-	return s, nil
+
+	return store, nil
 }
 
-func (s *Store) Ping(context.Context) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if _, err := os.Stat(s.statePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+func (s *Store) Ping(ctx context.Context) error {
+	if err := s.db.PingContext(ctx); err != nil {
 		return err
 	}
-	if _, err := os.Stat(s.credsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+	_, err := os.Stat(s.dbPath)
+	return err
 }
 
 func (s *Store) ListModelSources() []ModelSource {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return cloneSources(s.data.ModelSources, s.credentials.APIKeys)
+	sources, err := s.listModelSources(context.Background())
+	if err != nil {
+		return []ModelSource{}
+	}
+	return sources
 }
 
-func (s *Store) CreateModelSource(_ context.Context, req ModelSourceUpsertRequest) (ModelSource, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) CreateModelSource(ctx context.Context, req ModelSourceUpsertRequest) (ModelSource, error) {
 	if err := validateModelSourceRequest(req); err != nil {
 		return ModelSource{}, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelSource{}, err
+	}
+	defer tx.Rollback()
 
 	source := ModelSource{
 		ID:             newID("src"),
@@ -142,69 +168,122 @@ func (s *Store) CreateModelSource(_ context.Context, req ModelSourceUpsertReques
 		ProviderType:   req.ProviderType,
 		DefaultModelID: req.DefaultModelID,
 		Enabled:        req.Enabled,
-		Position:       len(s.data.ModelSources),
 	}
 
-	s.data.ModelSources = append(s.data.ModelSources, source)
-	s.credentials.APIKeys[source.ID] = strings.TrimSpace(req.APIKey)
-	s.sortModelSourcesLocked()
-
-	if err := s.persistLocked(); err != nil {
+	if err := insertModelSource(ctx, tx, source); err != nil {
+		return ModelSource{}, err
+	}
+	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
 		return ModelSource{}, err
 	}
 
+	s.credentials.APIKeys[source.ID] = strings.TrimSpace(req.APIKey)
+	if err := s.persistCredentialsLocked(); err != nil {
+		return ModelSource{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ModelSource{}, err
+	}
+
+	source, err = s.getModelSource(ctx, source.ID)
+	if err != nil {
+		return ModelSource{}, err
+	}
 	return withCredentialView(source, s.credentials.APIKeys[source.ID]), nil
 }
 
-func (s *Store) UpdateModelSource(_ context.Context, id string, req ModelSourceUpsertRequest) (ModelSource, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourceUpsertRequest) (ModelSource, error) {
 	if err := validateModelSourceRequest(req); err != nil {
 		return ModelSource{}, err
 	}
 
-	index := slices.IndexFunc(s.data.ModelSources, func(item ModelSource) bool { return item.ID == id })
-	if index < 0 {
-		return ModelSource{}, ErrNotFound
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ModelSource{}, err
 	}
+	defer tx.Rollback()
 
-	source := s.data.ModelSources[index]
-	source.Name = req.Name
-	source.BaseURL = req.BaseURL
-	source.ProviderType = req.ProviderType
-	source.DefaultModelID = req.DefaultModelID
-	source.Enabled = req.Enabled
-	s.data.ModelSources[index] = source
-	s.credentials.APIKeys[id] = strings.TrimSpace(req.APIKey)
-
-	if err := s.persistLocked(); err != nil {
+	result, err := tx.ExecContext(ctx, `
+		UPDATE model_sources
+		SET name = ?, base_url = ?, provider_type = ?, default_model_id = ?, enabled = ?
+		WHERE id = ?
+	`, req.Name, req.BaseURL, req.ProviderType, req.DefaultModelID, boolToInt(req.Enabled), id)
+	if err != nil {
 		return ModelSource{}, err
 	}
 
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return ModelSource{}, err
+	}
+	if rowsAffected == 0 {
+		return ModelSource{}, ErrNotFound
+	}
+
+	s.credentials.APIKeys[id] = strings.TrimSpace(req.APIKey)
+	if err := s.persistCredentialsLocked(); err != nil {
+		return ModelSource{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ModelSource{}, err
+	}
+
+	source, err := s.getModelSource(ctx, id)
+	if err != nil {
+		return ModelSource{}, err
+	}
 	return withCredentialView(source, s.credentials.APIKeys[id]), nil
 }
 
-func (s *Store) DeleteModelSource(_ context.Context, id string) error {
+func (s *Store) DeleteModelSource(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	index := slices.IndexFunc(s.data.ModelSources, func(item ModelSource) bool { return item.ID == id })
-	if index < 0 {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM model_sources WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return ErrNotFound
 	}
 
-	s.data.ModelSources = append(s.data.ModelSources[:index], s.data.ModelSources[index+1:]...)
+	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
+		return err
+	}
+
 	delete(s.credentials.APIKeys, id)
-	s.sortModelSourcesLocked()
-	return s.persistLocked()
+	if err := s.persistCredentialsLocked(); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
-func (s *Store) ReorderModelSources(_ context.Context, items []ModelSourceOrderItem) error {
+func (s *Store) ReorderModelSources(ctx context.Context, items []ModelSourceOrderItem) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if len(items) != len(s.data.ModelSources) {
+	current, err := listModelSourcesTx(ctx, s.db)
+	if err != nil {
+		return err
+	}
+	if len(items) != len(current) {
 		return ErrInvalidInput
 	}
 
@@ -212,70 +291,96 @@ func (s *Store) ReorderModelSources(_ context.Context, items []ModelSourceOrderI
 	for _, item := range items {
 		positions[item.ID] = item.Position
 	}
-
-	for i := range s.data.ModelSources {
-		position, ok := positions[s.data.ModelSources[i].ID]
-		if !ok {
+	for _, source := range current {
+		if _, ok := positions[source.ID]; !ok {
 			return ErrInvalidInput
 		}
-		s.data.ModelSources[i].Position = position
 	}
 
-	s.sortModelSourcesLocked()
-	return s.persistLocked()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, `UPDATE model_sources SET position = ? WHERE id = ?`, item.Position, item.ID); err != nil {
+			return err
+		}
+	}
+
+	if err := normalizeModelSourcePositions(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListSelectedModels() []SelectedModel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	items := append([]SelectedModel(nil), s.data.SelectedModels...)
-	slices.SortFunc(items, func(a, b SelectedModel) int { return a.Position - b.Position })
+	items, err := s.listSelectedModels(context.Background())
+	if err != nil {
+		return []SelectedModel{}
+	}
 	return items
 }
 
-func (s *Store) ReplaceSelectedModels(_ context.Context, models []SelectedModel) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+func (s *Store) ReplaceSelectedModels(ctx context.Context, models []SelectedModel) error {
 	for _, model := range models {
 		if strings.TrimSpace(model.ModelID) == "" {
 			return ErrInvalidInput
 		}
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	next := append([]SelectedModel(nil), models...)
 	slices.SortFunc(next, func(a, b SelectedModel) int { return a.Position - b.Position })
-	for i := range next {
-		next[i].Position = i
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	s.data.SelectedModels = next
-	return s.persistLocked()
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM selected_models`); err != nil {
+		return err
+	}
+	for i, model := range next {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO selected_models(model_id, position) VALUES(?, ?)`, model.ModelID, i); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 func (s *Store) ListModels() []ExposedModel {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	sources, err := s.listModelSources(context.Background())
+	if err != nil {
+		return []ExposedModel{}
+	}
+	selected, err := s.listSelectedModels(context.Background())
+	if err != nil {
+		return []ExposedModel{}
+	}
 
-	selected := make([]ExposedModel, 0, len(s.data.SelectedModels))
+	models := make([]ExposedModel, 0, len(selected))
 	seen := map[string]struct{}{}
 
-	for _, item := range s.data.SelectedModels {
-		selected = appendIfModelVisible(selected, seen, item.ModelID, s.data.ModelSources)
+	for _, item := range selected {
+		models = appendIfModelVisible(models, seen, item.ModelID, sources)
+	}
+	if len(models) > 0 {
+		return models
 	}
 
-	if len(selected) > 0 {
-		return selected
-	}
-
-	fallback := make([]ExposedModel, 0, len(s.data.ModelSources))
-	for _, source := range s.data.ModelSources {
+	fallback := make([]ExposedModel, 0, len(sources))
+	for _, source := range sources {
 		if !source.Enabled || strings.TrimSpace(source.DefaultModelID) == "" {
 			continue
 		}
 		fallback = appendIfModelVisible(fallback, seen, source.DefaultModelID, []ModelSource{source})
 	}
-
 	return fallback
 }
 
@@ -293,48 +398,130 @@ func (s *Store) ValidateModel(modelID string) error {
 	return fmt.Errorf("%w: %s", ErrNotFound, modelID)
 }
 
-func (s *Store) load() error {
-	if err := loadJSONFile(s.statePath, &s.data); err != nil {
-		return fmt.Errorf("load state: %w", err)
+func (s *Store) getModelSource(ctx context.Context, id string) (ModelSource, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, name, base_url, provider_type, default_model_id, enabled, position
+		FROM model_sources
+		WHERE id = ?
+	`, id)
+
+	var source ModelSource
+	var enabled int
+	err := row.Scan(
+		&source.ID,
+		&source.Name,
+		&source.BaseURL,
+		&source.ProviderType,
+		&source.DefaultModelID,
+		&enabled,
+		&source.Position,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ModelSource{}, ErrNotFound
 	}
-	if err := loadJSONFile(s.credsPath, &s.credentials); err != nil {
-		return fmt.Errorf("load credentials: %w", err)
+	if err != nil {
+		return ModelSource{}, err
 	}
-	return nil
+
+	source.Enabled = enabled != 0
+	return source, nil
 }
 
-func (s *Store) ensureVersionFile() error {
-	payload := map[string]any{
-		"version":         1,
-		"storage_backend": "json-file",
+func (s *Store) listModelSources(ctx context.Context) ([]ModelSource, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sources, err := listModelSourcesTx(ctx, s.db)
+	if err != nil {
+		return nil, err
 	}
-	return writeJSONFile(s.versionPath, payload)
+	return cloneSources(sources, s.credentials.APIKeys), nil
 }
 
-func (s *Store) persistLocked() error {
-	if err := writeJSONFile(s.statePath, s.data); err != nil {
-		return err
+func (s *Store) listSelectedModels(ctx context.Context) ([]SelectedModel, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT model_id, position
+		FROM selected_models
+		ORDER BY position ASC
+	`)
+	if err != nil {
+		return nil, err
 	}
-	if err := writeJSONFile(s.credsPath, s.credentials); err != nil {
-		return err
-	}
-	return nil
-}
+	defer rows.Close()
 
-func (s *Store) sortModelSourcesLocked() {
-	slices.SortFunc(s.data.ModelSources, func(a, b ModelSource) int {
-		if a.Position == b.Position {
-			return strings.Compare(a.ID, b.ID)
+	var items []SelectedModel
+	for rows.Next() {
+		var item SelectedModel
+		if err := rows.Scan(&item.ModelID, &item.Position); err != nil {
+			return nil, err
 		}
-		return a.Position - b.Position
-	})
-	for i := range s.data.ModelSources {
-		s.data.ModelSources[i].Position = i
+		items = append(items, item)
 	}
+	return items, rows.Err()
+}
+
+func insertModelSource(ctx context.Context, tx *sql.Tx, source ModelSource) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO model_sources(id, name, base_url, provider_type, default_model_id, enabled, position)
+		VALUES(?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) + 1 FROM model_sources), 0))
+	`, source.ID, source.Name, source.BaseURL, source.ProviderType, source.DefaultModelID, boolToInt(source.Enabled))
+	return err
+}
+
+func listModelSourcesTx(ctx context.Context, db queryer) ([]ModelSource, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, name, base_url, provider_type, default_model_id, enabled, position
+		FROM model_sources
+		ORDER BY position ASC, id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []ModelSource
+	for rows.Next() {
+		var item ModelSource
+		var enabled int
+		if err := rows.Scan(
+			&item.ID,
+			&item.Name,
+			&item.BaseURL,
+			&item.ProviderType,
+			&item.DefaultModelID,
+			&enabled,
+			&item.Position,
+		); err != nil {
+			return nil, err
+		}
+		item.Enabled = enabled != 0
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func normalizeModelSourcePositions(ctx context.Context, tx *sql.Tx) error {
+	sources, err := listModelSourcesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	for i, source := range sources {
+		if _, err := tx.ExecContext(ctx, `UPDATE model_sources SET position = ? WHERE id = ?`, i, source.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) persistCredentialsLocked() error {
+	return writeJSONFile(s.credsPath, s.credentials)
 }
 
 func validateModelSourceRequest(req ModelSourceUpsertRequest) error {
-	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.BaseURL) == "" || strings.TrimSpace(req.ProviderType) == "" || strings.TrimSpace(req.DefaultModelID) == "" {
+	if strings.TrimSpace(req.Name) == "" ||
+		strings.TrimSpace(req.BaseURL) == "" ||
+		strings.TrimSpace(req.ProviderType) == "" ||
+		strings.TrimSpace(req.DefaultModelID) == "" {
 		return ErrInvalidInput
 	}
 	return nil
@@ -417,4 +604,15 @@ func writeJSONFile(path string, value any) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }

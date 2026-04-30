@@ -30,5 +30,5 @@ go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
 ## Current Notes
 
 1. 当前推理执行器是 contract-first 的本地 echo 实现，用于先打通 runtime API、stream 语义和管理面
-2. model source 的 metadata 与 credentials 已拆分持久化
-3. 当前存储后端是 JSON 文件，后续需要替换为 SQLite 以完全对齐规范文档中的首版技术约束
+2. runtime 状态持久化使用 SQLite，credentials 保持独立 JSON 文件
+3. 当前 provider 执行链路仍是本地 stub，下一步需要补真实 upstream 转发与 source 级路由
