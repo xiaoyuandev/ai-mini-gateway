@@ -1,8 +1,10 @@
 package web
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -48,7 +50,11 @@ func WriteDoneSSE(w http.ResponseWriter) {
 	}
 }
 
-func WriteProxyResponse(w http.ResponseWriter, status int, header http.Header, body []byte) {
+func WriteProxyResponse(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+
+	status := resp.StatusCode
+	header := resp.Header
 	for key, values := range header {
 		switch http.CanonicalHeaderKey(key) {
 		case "Content-Length", "Transfer-Encoding", "Connection":
@@ -59,5 +65,23 @@ func WriteProxyResponse(w http.ResponseWriter, status int, header http.Header, b
 		}
 	}
 	w.WriteHeader(status)
-	_, _ = w.Write(body)
+
+	reader := bufio.NewReader(resp.Body)
+	buffer := make([]byte, 32*1024)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			_, _ = w.Write(buffer[:n])
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+		if err == nil {
+			continue
+		}
+		if err == io.EOF {
+			return
+		}
+		return
+	}
 }

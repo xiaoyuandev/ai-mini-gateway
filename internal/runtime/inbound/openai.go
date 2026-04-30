@@ -43,7 +43,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		web.WriteProxyResponse(w, resp.StatusCode, resp.Header, resp.Body)
+		web.WriteProxyResponse(w, resp)
 	})
 
 	mux.HandleFunc("POST /v1/responses", func(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +64,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			web.WriteError(w, http.StatusBadGateway, "upstream_request_failed", err.Error())
 			return
 		}
-		web.WriteProxyResponse(w, resp.StatusCode, resp.Header, resp.Body)
+		web.WriteProxyResponse(w, resp)
 	})
 }
 

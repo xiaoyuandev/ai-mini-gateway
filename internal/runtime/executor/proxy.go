@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -14,12 +13,6 @@ import (
 
 type Proxy struct {
 	client *http.Client
-}
-
-type Response struct {
-	StatusCode int
-	Header     http.Header
-	Body       []byte
 }
 
 func NewProxy() *Proxy {
@@ -32,7 +25,7 @@ func NewProxyWithClient(client *http.Client) *Proxy {
 	}
 }
 
-func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path string, incomingHeader http.Header, body []byte) (*Response, error) {
+func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path string, incomingHeader http.Header, body []byte) (*http.Response, error) {
 	url := strings.TrimRight(source.BaseURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -46,18 +39,7 @@ func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path stri
 	if err != nil {
 		return nil, fmt.Errorf("upstream_request_failed: %w", err)
 	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("upstream_read_failed: %w", err)
-	}
-
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Header:     resp.Header.Clone(),
-		Body:       payload,
-	}, nil
+	return resp, nil
 }
 
 func copyHeader(dst http.Header, src http.Header) {
