@@ -75,23 +75,36 @@ type ExposedModel struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSource, error) {
+func (s *Store) ListEnabledModelSources() ([]ModelSource, error) {
 	sources, err := s.listModelSources(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]ModelSource, 0, len(sources))
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		source.APIKey = s.credentials.APIKeys[source.ID]
+		result = append(result, source)
+	}
+	return result, nil
+}
+
+func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSource, error) {
+	sources, err := s.ListEnabledModelSources()
 	if err != nil {
 		return ModelSource{}, err
 	}
 
 	for _, source := range sources {
-		if !source.Enabled {
-			continue
-		}
 		if source.DefaultModelID != modelID {
 			continue
 		}
 		if source.ProviderType != providerType {
 			continue
 		}
-		source.APIKey = s.credentials.APIKeys[source.ID]
 		return source, nil
 	}
 

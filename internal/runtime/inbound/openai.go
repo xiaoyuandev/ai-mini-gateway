@@ -20,9 +20,12 @@ type openAIResponseRequest struct {
 
 func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, r *http.Request) {
-		web.WriteJSON(w, http.StatusOK, map[string]any{
-			"data": store.ListModels(),
-		})
+		models, err := aggregateModels(r.Context(), store, proxy)
+		if err != nil {
+			web.WriteError(w, http.StatusInternalServerError, "models_unavailable", err.Error())
+			return
+		}
+		web.WriteJSON(w, http.StatusOK, map[string]any{"data": models})
 	})
 
 	mux.HandleFunc("POST /v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
@@ -32,7 +35,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			return
 		}
 
-		source, err := store.ResolveModelSource(req.Model, "openai-compatible")
+		source, err := resolveModelSource(r.Context(), store, proxy, req.Model, "openai-compatible")
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return
@@ -53,7 +56,7 @@ func RegisterOpenAI(mux *http.ServeMux, store *state.Store, proxy *executor.Prox
 			return
 		}
 
-		source, err := store.ResolveModelSource(req.Model, "openai-compatible")
+		source, err := resolveModelSource(r.Context(), store, proxy, req.Model, "openai-compatible")
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return

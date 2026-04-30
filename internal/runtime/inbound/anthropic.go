@@ -31,7 +31,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			return
 		}
 
-		source, err := store.ResolveModelSource(req.Model, "anthropic-compatible")
+		source, err := resolveModelSource(r.Context(), store, proxy, req.Model, "anthropic-compatible")
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return
@@ -57,7 +57,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 			return
 		}
 
-		source, err := store.ResolveModelSource(req.Model, "anthropic-compatible")
+		source, err := resolveModelSource(r.Context(), store, proxy, req.Model, "anthropic-compatible")
 		if err != nil {
 			web.WriteError(w, http.StatusBadRequest, "model_not_available", err.Error())
 			return

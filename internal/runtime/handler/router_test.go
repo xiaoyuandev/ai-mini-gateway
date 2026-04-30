@@ -40,12 +40,25 @@ func TestRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create anthropic source: %v", err)
 	}
+	if err := store.ReplaceSelectedModels(t.Context(), []state.SelectedModel{
+		{ModelID: "claude-3-7-sonnet", Position: 0},
+		{ModelID: "gpt-4.1-mini", Position: 1},
+	}); err != nil {
+		t.Fatalf("replace selected models: %v", err)
+	}
 
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			rec := httptest.NewRecorder()
 
 			switch req.URL.String() {
+			case "https://openai.example/v1/models":
+				_ = json.NewEncoder(rec).Encode(map[string]any{
+					"data": []map[string]any{
+						{"id": "gpt-4.1", "object": "model", "owned_by": "openai-compatible"},
+						{"id": "gpt-4.1-mini", "object": "model", "owned_by": "openai-compatible"},
+					},
+				})
 			case "https://openai.example/v1/chat/completions":
 				var payload map[string]any
 				_ = json.NewDecoder(req.Body).Decode(&payload)
@@ -68,6 +81,8 @@ func TestRuntimeContract(t *testing.T) {
 					return rec.Result(), nil
 				}
 				_ = json.NewEncoder(rec).Encode(map[string]any{"id": "msg_test", "type": "message"})
+			case "https://anthropic.example/v1/models":
+				rec.WriteHeader(http.StatusNotFound)
 			case "https://anthropic.example/v1/messages/count_tokens":
 				_ = json.NewEncoder(rec).Encode(map[string]any{"input_tokens": 3})
 			default:
@@ -100,10 +115,25 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
 		}
+		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
+			t.Fatalf("unexpected body: %q", got)
+		}
+	})
+
+	t.Run("non-selected model rejected", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
 	})
 
 	t.Run("chat completions", func(t *testing.T) {
-		body := []byte(`{"model":"gpt-4.1","messages":[{"role":"user","content":"hello"}]}`)
+		body := []byte(`{"model":"gpt-4.1-mini","messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
@@ -141,7 +171,7 @@ func TestRuntimeContract(t *testing.T) {
 	})
 
 	t.Run("chat completions stream", func(t *testing.T) {
-		body := []byte(`{"model":"gpt-4.1","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
+		body := []byte(`{"model":"gpt-4.1-mini","stream":true,"messages":[{"role":"user","content":"hello"}]}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
 		rec := httptest.NewRecorder()
 
