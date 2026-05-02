@@ -38,6 +38,30 @@ func TestStoreModelSourceValidation(t *testing.T) {
 	if err != ErrConflict {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
+
+	_, err = store.CreateModelSource(t.Context(), ModelSourceUpsertRequest{
+		ExternalID:     "dup-external",
+		Name:           "OpenAI One",
+		BaseURL:        "https://example.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("create source with external id: %v", err)
+	}
+
+	_, err = store.CreateModelSource(t.Context(), ModelSourceUpsertRequest{
+		ExternalID:     "dup-external",
+		Name:           "OpenAI Two",
+		BaseURL:        "https://example-two.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1-mini",
+		Enabled:        true,
+	})
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict for duplicate external id, got %v", err)
+	}
 }
 
 func TestStoreReplaceSelectedModelsRejectsDuplicates(t *testing.T) {
@@ -206,6 +230,89 @@ func TestStoreReplaceRuntimeConfigRejectsInvalidSelectedModelWithoutDestroyingEx
 	selected := store.ListSelectedModels()
 	if len(selected) != 1 || selected[0].ModelID != "gpt-old" {
 		t.Fatalf("expected old selected models to be preserved, got %+v", selected)
+	}
+}
+
+func TestStoreReplaceRuntimeConfigRejectsDuplicateSourcePositions(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.ReplaceRuntimeConfig(t.Context(), RuntimeSyncRequest{
+		Sources: []ModelSourceUpsertRequest{
+			{
+				Name:           "OpenAI One",
+				BaseURL:        "https://api.openai.com/v1",
+				ProviderType:   "openai-compatible",
+				DefaultModelID: "gpt-4.1",
+				Enabled:        true,
+				Position:       0,
+			},
+			{
+				Name:           "OpenAI Two",
+				BaseURL:        "https://api.openai.com/v2",
+				ProviderType:   "openai-compatible",
+				DefaultModelID: "gpt-4.1-mini",
+				Enabled:        true,
+				Position:       0,
+			},
+		},
+	})
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestStoreReplaceRuntimeConfigRejectsDuplicateSelectedPositions(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.ReplaceRuntimeConfig(t.Context(), RuntimeSyncRequest{
+		Sources: []ModelSourceUpsertRequest{
+			{
+				Name:            "OpenAI",
+				BaseURL:         "https://api.openai.com/v1",
+				ProviderType:    "openai-compatible",
+				DefaultModelID:  "gpt-4.1",
+				ExposedModelIDs: []string{"gpt-4.1-mini"},
+				Enabled:         true,
+				Position:        0,
+			},
+		},
+		SelectedModels: []SelectedModel{
+			{ModelID: "gpt-4.1", Position: 0},
+			{ModelID: "gpt-4.1-mini", Position: 0},
+		},
+	})
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got %v", err)
+	}
+}
+
+func TestStoreReplaceRuntimeConfigRejectsDuplicateExternalIDs(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.ReplaceRuntimeConfig(t.Context(), RuntimeSyncRequest{
+		Sources: []ModelSourceUpsertRequest{
+			{
+				ExternalID:     "same",
+				Name:           "OpenAI One",
+				BaseURL:        "https://api.openai.com/v1",
+				ProviderType:   "openai-compatible",
+				DefaultModelID: "gpt-4.1",
+				Enabled:        true,
+				Position:       0,
+			},
+			{
+				ExternalID:     "same",
+				Name:           "OpenAI Two",
+				BaseURL:        "https://api.openai.com/v2",
+				ProviderType:   "openai-compatible",
+				DefaultModelID: "gpt-4.1-mini",
+				Enabled:        true,
+				Position:       1,
+			},
+		},
+	})
+	if err != ErrConflict {
+		t.Fatalf("expected ErrConflict, got %v", err)
 	}
 }
 

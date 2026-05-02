@@ -234,6 +234,10 @@ func (s *Store) CreateModelSource(ctx context.Context, req ModelSourceUpsertRequ
 	}
 	defer tx.Rollback()
 
+	if err := ensureUniqueExternalID(ctx, tx, strings.TrimSpace(req.ExternalID), ""); err != nil {
+		return ModelSource{}, err
+	}
+
 	source := ModelSource{
 		ID:              newID("src"),
 		ExternalID:      strings.TrimSpace(req.ExternalID),
@@ -284,6 +288,10 @@ func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourc
 		return ModelSource{}, err
 	}
 	defer tx.Rollback()
+
+	if err := ensureUniqueExternalID(ctx, tx, strings.TrimSpace(req.ExternalID), id); err != nil {
+		return ModelSource{}, err
+	}
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE model_sources
@@ -879,10 +887,35 @@ func validateModelSourceRequest(req ModelSourceUpsertRequest) error {
 }
 
 func validateRuntimeSyncRequest(req RuntimeSyncRequest) error {
+	sourcePositions := map[int]struct{}{}
+	externalIDs := map[string]struct{}{}
 	for _, source := range req.Sources {
 		if err := validateModelSourceRequest(source); err != nil {
 			return err
 		}
+		if source.Position < 0 {
+			return ErrInvalidInput
+		}
+		if _, ok := sourcePositions[source.Position]; ok {
+			return ErrConflict
+		}
+		sourcePositions[source.Position] = struct{}{}
+		if externalID := strings.TrimSpace(source.ExternalID); externalID != "" {
+			if _, ok := externalIDs[externalID]; ok {
+				return ErrConflict
+			}
+			externalIDs[externalID] = struct{}{}
+		}
+	}
+	selectedPositions := map[int]struct{}{}
+	for _, model := range req.SelectedModels {
+		if model.Position < 0 {
+			return ErrInvalidInput
+		}
+		if _, ok := selectedPositions[model.Position]; ok {
+			return ErrConflict
+		}
+		selectedPositions[model.Position] = struct{}{}
 	}
 	return nil
 }
@@ -1000,6 +1033,34 @@ func cloneCredentialsState(state credentialsState) credentialsState {
 		cloned.APIKeys[key] = value
 	}
 	return cloned
+}
+
+func ensureUniqueExternalID(ctx context.Context, db queryer, externalID string, excludeID string) error {
+	externalID = strings.TrimSpace(externalID)
+	if externalID == "" {
+		return nil
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id
+		FROM model_sources
+		WHERE external_id = ?
+	`, externalID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		if id != excludeID {
+			return ErrConflict
+		}
+	}
+	return rows.Err()
 }
 
 func withCredentialView(item ModelSource, apiKey string) ModelSource {

@@ -13,6 +13,39 @@ import (
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
 
+func TestProxyHealthcheckRejectsInvalidModelsPayload(t *testing.T) {
+	source := state.ModelSource{
+		ID:             "src_openai_invalid",
+		BaseURL:        "https://openai.example/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        true,
+		APIKey:         "sk-openai",
+	}
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			rec.WriteHeader(http.StatusOK)
+			_, _ = rec.WriteString("not-json")
+			return rec.Result(), nil
+		}),
+	}
+
+	proxy := NewProxyWithClientAndTTL(client, 30*time.Second)
+	result := proxy.HealthcheckSource(context.Background(), source)
+
+	if result.Status != "error" {
+		t.Fatalf("expected error status, got %+v", result)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("expected status code 200 for invalid payload, got %+v", result)
+	}
+	if result.Summary == "" {
+		t.Fatalf("expected summary to explain failure, got %+v", result)
+	}
+}
+
 func TestProxyConcurrentFetchModels(t *testing.T) {
 	source := state.ModelSource{
 		ID:             "src_openai",
