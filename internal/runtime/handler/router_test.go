@@ -131,10 +131,10 @@ func TestRuntimeContract(t *testing.T) {
 	}
 
 	router := NewRouterWithProxyAndInfo(store, executor.NewProxyWithClient(client), buildinfo.Info{
-		RuntimeKind:     "ai-mini-gateway",
-		Version:         "dev",
-		Commit:          "unknown",
-		ContractVersion: "v1",
+		RuntimeKind:     buildinfo.DefaultRuntimeKind,
+		Version:         buildinfo.DefaultVersion,
+		Commit:          buildinfo.DefaultCommit,
+		ContractVersion: buildinfo.DefaultContractVersion,
 		Host:            "127.0.0.1",
 		Port:            3457,
 		DataDir:         dir,
@@ -153,7 +153,7 @@ func TestRuntimeContract(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if payload["status"] != "ok" || payload["runtime_kind"] != "ai-mini-gateway" || payload["version"] != "dev" || payload["commit"] != "unknown" || payload["contract_version"] != "v1" {
+		if payload["status"] != "ok" || payload["runtime_kind"] != buildinfo.DefaultRuntimeKind || payload["version"] != buildinfo.DefaultVersion || payload["commit"] != buildinfo.DefaultCommit || payload["contract_version"] != buildinfo.DefaultContractVersion {
 			t.Fatalf("unexpected health payload: %+v", payload)
 		}
 	})
@@ -171,9 +171,9 @@ func TestRuntimeContract(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if payload["runtime_kind"] != "ai-mini-gateway" ||
-			payload["version"] != "dev" ||
-			payload["commit"] != "unknown" ||
+		if payload["runtime_kind"] != buildinfo.DefaultRuntimeKind ||
+			payload["version"] != buildinfo.DefaultVersion ||
+			payload["commit"] != buildinfo.DefaultCommit ||
 			payload["supports_openai_compatible"] != true ||
 			payload["supports_anthropic_compatible"] != true ||
 			payload["supports_models_api"] != true ||
@@ -202,10 +202,10 @@ func TestRuntimeContract(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if payload["runtime_kind"] != "ai-mini-gateway" ||
+		if payload["runtime_kind"] != buildinfo.DefaultRuntimeKind ||
 			payload["status"] != "ok" ||
-			payload["version"] != "dev" ||
-			payload["commit"] != "unknown" ||
+			payload["version"] != buildinfo.DefaultVersion ||
+			payload["commit"] != buildinfo.DefaultCommit ||
 			payload["host"] != "127.0.0.1" ||
 			payload["port"] != float64(3457) ||
 			payload["data_dir"] != dir ||

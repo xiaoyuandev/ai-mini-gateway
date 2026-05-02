@@ -18,9 +18,9 @@ import (
 )
 
 var (
-	version         = "dev"
-	commit          = "unknown"
-	contractVersion = "v1"
+	version         = buildinfo.DefaultVersion
+	commit          = buildinfo.DefaultCommit
+	contractVersion = buildinfo.DefaultContractVersion
 )
 
 func main() {
@@ -41,7 +41,7 @@ func main() {
 	srv := &http.Server{
 		Addr: cfg.Address(),
 		Handler: handler.NewRouterWithProxyAndInfo(store, proxy, buildinfo.Info{
-			RuntimeKind:     "ai-mini-gateway",
+			RuntimeKind:     buildinfo.DefaultRuntimeKind,
 			Version:         version,
 			Commit:          commit,
 			ContractVersion: contractVersion,
