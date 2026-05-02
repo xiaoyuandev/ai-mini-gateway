@@ -16,10 +16,22 @@ type Config struct {
 }
 
 func FromFlags() Config {
-	return FromArgs(os.Args[1:], os.LookupEnv)
+	cfg, err := parseArgs(os.Args[1:], os.LookupEnv)
+	if err == flag.ErrHelp {
+		os.Exit(0)
+	}
+	if err != nil {
+		os.Exit(2)
+	}
+	return cfg
 }
 
 func FromArgs(args []string, lookupEnv func(string) (string, bool)) Config {
+	cfg, _ := parseArgs(args, lookupEnv)
+	return cfg
+}
+
+func parseArgs(args []string, lookupEnv func(string) (string, bool)) (Config, error) {
 	cfg := Config{}
 	fs := flag.NewFlagSet("ai-mini-gateway", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -29,8 +41,7 @@ func FromArgs(args []string, lookupEnv func(string) (string, bool)) Config {
 	fs.StringVar(&cfg.DataDir, "data-dir", envString(lookupEnv, "CORE_DATA_DIR", "./data"), "gateway data directory")
 	fs.DurationVar(&cfg.ModelsCacheTTL, "models-cache-ttl", 15*time.Second, "TTL for upstream models discovery cache")
 
-	_ = fs.Parse(args)
-	return cfg
+	return cfg, fs.Parse(args)
 }
 
 func (c Config) Address() string {

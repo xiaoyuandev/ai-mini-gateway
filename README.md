@@ -15,6 +15,18 @@
 go build -o ./bin/ai-mini-gateway ./cmd/gateway
 ```
 
+如果希望用户安装后直接通过一条命令启动，推荐使用：
+
+```bash
+go install github.com/yuanjunliang/ai-mini-gateway@latest
+```
+
+安装完成后可直接执行：
+
+```bash
+ai-mini-gateway
+```
+
 发布构建建议注入版本信息：
 
 ```bash
@@ -32,6 +44,27 @@ go build \
 
 ## Run
 
+最简单的启动方式：
+
+```bash
+go run .
+```
+
+或者安装后直接：
+
+```bash
+ai-mini-gateway
+```
+
+默认参数如下：
+
+1. `host=127.0.0.1`
+2. `port=3457`
+3. `data-dir=./data`
+4. `models-cache-ttl=15s`
+
+所以用户不传参数也可以直接启动。
+
 ```bash
 go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
 ```
@@ -47,6 +80,16 @@ LOCAL_GATEWAY_RUNTIME_HOST=127.0.0.1 \
 LOCAL_GATEWAY_RUNTIME_PORT=3457 \
 CORE_DATA_DIR=./data \
 ./bin/ai-mini-gateway --models-cache-ttl 15s
+```
+
+如果只想覆盖默认端口或数据目录，也可以只传单个参数：
+
+```bash
+ai-mini-gateway --port 8080
+```
+
+```bash
+ai-mini-gateway --data-dir /tmp/ai-mini-gateway
 ```
 
 ## Implemented Endpoints
