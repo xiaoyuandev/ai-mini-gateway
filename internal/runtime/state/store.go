@@ -252,9 +252,11 @@ func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourc
 		return ModelSource{}, err
 	}
 
-	s.credentials.APIKeys[id] = strings.TrimSpace(req.APIKey)
-	if err := s.persistCredentialsLocked(); err != nil {
-		return ModelSource{}, err
+	if apiKey := strings.TrimSpace(req.APIKey); apiKey != "" {
+		s.credentials.APIKeys[id] = apiKey
+		if err := s.persistCredentialsLocked(); err != nil {
+			return ModelSource{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -630,6 +632,9 @@ func listAvailableModelIDsTx(ctx context.Context, db queryer) (map[string]struct
 
 	modelIDs := map[string]struct{}{}
 	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
 		if strings.TrimSpace(source.DefaultModelID) != "" {
 			modelIDs[source.DefaultModelID] = struct{}{}
 		}

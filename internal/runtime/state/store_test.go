@@ -75,6 +75,71 @@ func TestStoreReplaceSelectedModelsRejectsUnknownModel(t *testing.T) {
 	}
 }
 
+func TestStoreReplaceSelectedModelsRejectsDisabledSourceModel(t *testing.T) {
+	store := newTestStore(t)
+
+	_, err := store.CreateModelSource(t.Context(), ModelSourceUpsertRequest{
+		Name:           "Disabled OpenAI",
+		BaseURL:        "https://api.openai.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        false,
+		APIKey:         "sk-openai",
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	err = store.ReplaceSelectedModels(t.Context(), []SelectedModel{
+		{ModelID: "gpt-4.1", Position: 0},
+	})
+	if err != ErrInvalidInput {
+		t.Fatalf("expected ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestStoreUpdateModelSourcePreservesExistingAPIKeyWhenRequestAPIKeyEmpty(t *testing.T) {
+	store := newTestStore(t)
+
+	source, err := store.CreateModelSource(t.Context(), ModelSourceUpsertRequest{
+		Name:           "OpenAI",
+		BaseURL:        "https://api.openai.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        true,
+		APIKey:         "sk-openai-original",
+	})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	updated, err := store.UpdateModelSource(t.Context(), source.ID, ModelSourceUpsertRequest{
+		Name:           "OpenAI Renamed",
+		BaseURL:        "https://api.openai.com/v1",
+		ProviderType:   "openai-compatible",
+		DefaultModelID: "gpt-4.1",
+		Enabled:        true,
+		APIKey:         "",
+	})
+	if err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+	if updated.APIKeyMasked != source.APIKeyMasked {
+		t.Fatalf("expected api key to be preserved, before=%q after=%q", source.APIKeyMasked, updated.APIKeyMasked)
+	}
+
+	enabledSources, err := store.ListEnabledModelSources()
+	if err != nil {
+		t.Fatalf("list enabled sources: %v", err)
+	}
+	if len(enabledSources) != 1 {
+		t.Fatalf("expected 1 enabled source, got %d", len(enabledSources))
+	}
+	if enabledSources[0].APIKey != "sk-openai-original" {
+		t.Fatalf("expected original api key to be preserved, got %q", enabledSources[0].APIKey)
+	}
+}
+
 func TestDeleteModelSourceRemovesOrphanedSelectedModels(t *testing.T) {
 	store := newTestStore(t)
 
