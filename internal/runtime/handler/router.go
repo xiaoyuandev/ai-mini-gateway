@@ -17,23 +17,25 @@ import (
 
 func NewRouter(store *state.Store) http.Handler {
 	return NewRouterWithProxyAndInfo(store, executor.NewProxy(), buildinfo.Info{
-		RuntimeKind: "ai-mini-gateway",
-		Version:     "dev",
-		Commit:      "unknown",
-		Host:        "127.0.0.1",
-		Port:        3457,
-		DataDir:     "./data",
+		RuntimeKind:     "ai-mini-gateway",
+		Version:         "dev",
+		Commit:          "unknown",
+		ContractVersion: "v1",
+		Host:            "127.0.0.1",
+		Port:            3457,
+		DataDir:         "./data",
 	})
 }
 
 func NewRouterWithProxy(store *state.Store, proxy *executor.Proxy) http.Handler {
 	return NewRouterWithProxyAndInfo(store, proxy, buildinfo.Info{
-		RuntimeKind: "ai-mini-gateway",
-		Version:     "dev",
-		Commit:      "unknown",
-		Host:        "127.0.0.1",
-		Port:        3457,
-		DataDir:     "./data",
+		RuntimeKind:     "ai-mini-gateway",
+		Version:         "dev",
+		Commit:          "unknown",
+		ContractVersion: "v1",
+		Host:            "127.0.0.1",
+		Port:            3457,
+		DataDir:         "./data",
 	})
 }
 

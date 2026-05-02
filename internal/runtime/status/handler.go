@@ -26,6 +26,7 @@ func Register(mux *http.ServeMux, store *state.Store, info buildinfo.Info) {
 			"status":           "ok",
 			"version":          info.Version,
 			"commit":           info.Commit,
+			"contract_version": info.ContractVersion,
 			"host":             info.Host,
 			"port":             info.Port,
 			"data_dir":         info.DataDir,

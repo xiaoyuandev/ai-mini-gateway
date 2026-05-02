@@ -131,12 +131,13 @@ func TestRuntimeContract(t *testing.T) {
 	}
 
 	router := NewRouterWithProxyAndInfo(store, executor.NewProxyWithClient(client), buildinfo.Info{
-		RuntimeKind: "ai-mini-gateway",
-		Version:     "dev",
-		Commit:      "unknown",
-		Host:        "127.0.0.1",
-		Port:        3457,
-		DataDir:     dir,
+		RuntimeKind:     "ai-mini-gateway",
+		Version:         "dev",
+		Commit:          "unknown",
+		ContractVersion: "v1",
+		Host:            "127.0.0.1",
+		Port:            3457,
+		DataDir:         dir,
 	})
 
 	t.Run("health", func(t *testing.T) {
@@ -152,7 +153,7 @@ func TestRuntimeContract(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if payload["status"] != "ok" || payload["runtime_kind"] != "ai-mini-gateway" || payload["version"] != "dev" || payload["commit"] != "unknown" {
+		if payload["status"] != "ok" || payload["runtime_kind"] != "ai-mini-gateway" || payload["version"] != "dev" || payload["commit"] != "unknown" || payload["contract_version"] != "v1" {
 			t.Fatalf("unexpected health payload: %+v", payload)
 		}
 	})
@@ -173,6 +174,7 @@ func TestRuntimeContract(t *testing.T) {
 		if payload["runtime_kind"] != "ai-mini-gateway" ||
 			payload["version"] != "dev" ||
 			payload["commit"] != "unknown" ||
+			payload["contract_version"] != "v1" ||
 			payload["supports_openai_compatible"] != true ||
 			payload["supports_anthropic_compatible"] != true ||
 			payload["supports_models_api"] != true ||
@@ -183,6 +185,7 @@ func TestRuntimeContract(t *testing.T) {
 			payload["supports_source_capabilities"] != true ||
 			payload["supports_atomic_source_sync"] != true ||
 			payload["supports_runtime_version"] != true ||
+			payload["supports_contract_version"] != true ||
 			payload["supports_explicit_source_health"] != true {
 			t.Fatalf("unexpected capabilities payload: %+v", payload)
 		}
@@ -205,6 +208,7 @@ func TestRuntimeContract(t *testing.T) {
 			payload["status"] != "ok" ||
 			payload["version"] != "dev" ||
 			payload["commit"] != "unknown" ||
+			payload["contract_version"] != "v1" ||
 			payload["host"] != "127.0.0.1" ||
 			payload["port"] != float64(3457) ||
 			payload["data_dir"] != dir ||
