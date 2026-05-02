@@ -40,7 +40,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Validate embedded runtime flow
-        run: ./scripts/validate-embedded.sh
+        run: bash ./scripts/validate-embedded.sh
 
   web-build:
     name: web-build
