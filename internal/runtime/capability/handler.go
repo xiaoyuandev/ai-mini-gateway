@@ -13,7 +13,6 @@ func Register(mux *http.ServeMux, info buildinfo.Info) {
 			"runtime_kind":                    info.RuntimeKind,
 			"version":                         info.Version,
 			"commit":                          info.Commit,
-			"contract_version":                info.ContractVersion,
 			"supports_openai_compatible":      true,
 			"supports_anthropic_compatible":   true,
 			"supports_models_api":             true,
@@ -24,7 +23,6 @@ func Register(mux *http.ServeMux, info buildinfo.Info) {
 			"supports_source_capabilities":    true,
 			"supports_atomic_source_sync":     true,
 			"supports_runtime_version":        true,
-			"supports_contract_version":       true,
 			"supports_explicit_source_health": true,
 		})
 	})

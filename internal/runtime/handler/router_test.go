@@ -174,7 +174,6 @@ func TestRuntimeContract(t *testing.T) {
 		if payload["runtime_kind"] != "ai-mini-gateway" ||
 			payload["version"] != "dev" ||
 			payload["commit"] != "unknown" ||
-			payload["contract_version"] != "v1" ||
 			payload["supports_openai_compatible"] != true ||
 			payload["supports_anthropic_compatible"] != true ||
 			payload["supports_models_api"] != true ||
@@ -185,7 +184,6 @@ func TestRuntimeContract(t *testing.T) {
 			payload["supports_source_capabilities"] != true ||
 			payload["supports_atomic_source_sync"] != true ||
 			payload["supports_runtime_version"] != true ||
-			payload["supports_contract_version"] != true ||
 			payload["supports_explicit_source_health"] != true {
 			t.Fatalf("unexpected capabilities payload: %+v", payload)
 		}
@@ -208,7 +206,6 @@ func TestRuntimeContract(t *testing.T) {
 			payload["status"] != "ok" ||
 			payload["version"] != "dev" ||
 			payload["commit"] != "unknown" ||
-			payload["contract_version"] != "v1" ||
 			payload["host"] != "127.0.0.1" ||
 			payload["port"] != float64(3457) ||
 			payload["data_dir"] != dir ||

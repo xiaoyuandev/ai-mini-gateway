@@ -28,6 +28,7 @@ go build \
 
 1. `version` 对应 Git tag / GitHub Release 版本
 2. `contract_version` 对应对外 HTTP contract 兼容版本，当前固定为 `v1`
+3. `contract_version` 当前仅从 `/health` 暴露，作为调用方读取兼容版本的单一入口
 
 ## Run
 
@@ -116,6 +117,6 @@ web/
 2. 当前 provider 执行链路已支持基于 compatible HTTP contract 的真实上游转发
 3. provider 抽象已覆盖认证头、path、header forwarding、请求校验、错误归一和基础 capability 状态
 4. `/health` 会返回 `runtime_kind`、`version`、`commit`、`contract_version`
-5. `/capabilities` 会返回 `contract_version`，以及增强能力字段，例如 `supports_atomic_source_sync`、`supports_runtime_version`、`supports_contract_version`
+5. `/capabilities` 会返回增强能力字段，例如 `supports_atomic_source_sync` 和 `supports_runtime_version`
 6. `POST /admin/model-sources/:id/healthcheck` 可显式校验单条 source 的可达性
-7. `GET /runtime/status` 会返回 `contract_version`、`last_applied_at`、`sync_in_progress`、`last_sync_error` 等稳定运行态信息
+7. `GET /runtime/status` 会返回 `last_applied_at`、`sync_in_progress`、`last_sync_error` 等稳定运行态信息
