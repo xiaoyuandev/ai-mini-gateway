@@ -25,6 +25,15 @@ go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
 ./bin/ai-mini-gateway --host 127.0.0.1 --port 3457 --data-dir ./data --models-cache-ttl 15s
 ```
 
+也支持 embedded adapter 传入的环境变量，flags 优先级高于 env：
+
+```bash
+LOCAL_GATEWAY_RUNTIME_HOST=127.0.0.1 \
+LOCAL_GATEWAY_RUNTIME_PORT=3457 \
+CORE_DATA_DIR=./data \
+./bin/ai-mini-gateway --models-cache-ttl 15s
+```
+
 ## Implemented Endpoints
 
 1. `GET /health`
@@ -50,10 +59,28 @@ go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
 它会：
 
 1. 构建本地 binary
-2. 使用独立 data dir 启动 runtime
+2. 使用 embedded 环境变量和独立 data dir 启动 runtime
 3. 检查 `/health`
 4. 检查 `/capabilities`
 5. 退出并清理子进程
+
+## Web Console
+
+独立前端管理页面位于：
+
+```bash
+web/
+```
+
+它不由当前 Go runtime 内嵌提供，而是作为单独的 React + Vite + TailwindCSS 项目存在，通过 API 访问 gateway。
+
+开发态推荐：
+
+1. 单独启动 gateway
+2. 在 `web/` 目录启动前端 dev server
+3. 通过 Vite proxy 或 `VITE_API_BASE_URL` 访问 gateway API
+
+详细说明见 [web/README.md](web/README.md)。
 
 ## Release Notes
 
@@ -64,7 +91,7 @@ go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
 3. 一份最小启动参数说明
 4. 一份 capability / admin endpoint 列表
 
-可参考 [RELEASE.md](RELEASE.md)。
+可参考 [docs/RELEASE.md](docs/RELEASE.md)。
 
 ## Current Notes
 
