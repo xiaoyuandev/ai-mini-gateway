@@ -12,6 +12,7 @@ import (
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/health"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/inbound"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
+	runtimestatus "github.com/yuanjunliang/ai-mini-gateway/internal/runtime/status"
 )
 
 func NewRouter(store *state.Store) http.Handler {
@@ -19,6 +20,9 @@ func NewRouter(store *state.Store) http.Handler {
 		RuntimeKind: "ai-mini-gateway",
 		Version:     "dev",
 		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     "./data",
 	})
 }
 
@@ -27,6 +31,9 @@ func NewRouterWithProxy(store *state.Store, proxy *executor.Proxy) http.Handler 
 		RuntimeKind: "ai-mini-gateway",
 		Version:     "dev",
 		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     "./data",
 	})
 }
 
@@ -35,6 +42,7 @@ func NewRouterWithProxyAndInfo(store *state.Store, proxy *executor.Proxy, info b
 
 	health.Register(mux, store, info)
 	capability.Register(mux, info)
+	runtimestatus.Register(mux, store, info)
 	inbound.RegisterOpenAI(mux, store, proxy)
 	inbound.RegisterAnthropic(mux, store, proxy)
 	admin.Register(mux, store, proxy)

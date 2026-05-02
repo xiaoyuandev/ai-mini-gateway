@@ -43,6 +43,9 @@ func main() {
 			RuntimeKind: "ai-mini-gateway",
 			Version:     version,
 			Commit:      commit,
+			Host:        cfg.Host,
+			Port:        cfg.Port,
+			DataDir:     cfg.DataDir,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -83,12 +83,14 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 
 		var req state.RuntimeSyncRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			_ = store.SetLastSyncError(r.Context(), err.Error())
 			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}
 
 		result, err := store.ReplaceRuntimeConfig(r.Context(), req)
 		if err != nil {
+			_ = store.SetLastSyncError(r.Context(), err.Error())
 			writeStoreError(w, err)
 			return
 		}

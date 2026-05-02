@@ -58,6 +58,7 @@ CORE_DATA_DIR=./data \
 11. `GET /admin/model-sources/capabilities`
 12. `PUT /admin/runtime/sync`
 13. `POST /admin/model-sources/:id/healthcheck`
+14. `GET /runtime/status`
 
 ## Embedded Validation
 
@@ -112,3 +113,4 @@ web/
 4. `/health` 会返回 `runtime_kind`、`version`、`commit`
 5. `/capabilities` 会返回增强能力字段，例如 `supports_atomic_source_sync` 和 `supports_runtime_version`
 6. `POST /admin/model-sources/:id/healthcheck` 可显式校验单条 source 的可达性
+7. `GET /runtime/status` 会返回 `last_applied_at`、`sync_in_progress`、`last_sync_error` 等稳定运行态信息

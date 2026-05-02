@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/buildinfo"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
@@ -129,7 +130,14 @@ func TestRuntimeContract(t *testing.T) {
 		}),
 	}
 
-	router := NewRouterWithProxy(store, executor.NewProxyWithClient(client))
+	router := NewRouterWithProxyAndInfo(store, executor.NewProxyWithClient(client), buildinfo.Info{
+		RuntimeKind: "ai-mini-gateway",
+		Version:     "dev",
+		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     dir,
+	})
 
 	t.Run("health", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -177,6 +185,31 @@ func TestRuntimeContract(t *testing.T) {
 			payload["supports_runtime_version"] != true ||
 			payload["supports_explicit_source_health"] != true {
 			t.Fatalf("unexpected capabilities payload: %+v", payload)
+		}
+	})
+
+	t.Run("runtime status", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["runtime_kind"] != "ai-mini-gateway" ||
+			payload["status"] != "ok" ||
+			payload["version"] != "dev" ||
+			payload["commit"] != "unknown" ||
+			payload["host"] != "127.0.0.1" ||
+			payload["port"] != float64(3457) ||
+			payload["data_dir"] != dir ||
+			payload["sync_in_progress"] != false {
+			t.Fatalf("unexpected runtime status payload: %+v", payload)
 		}
 	})
 
@@ -639,6 +672,18 @@ func TestRuntimeContract(t *testing.T) {
 		if len(sources) != 1 || sources[0]["name"] != "OpenAI Synced" {
 			t.Fatalf("expected previous config to be preserved, got %+v", sources)
 		}
+
+		statusReq := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		statusRec := httptest.NewRecorder()
+		router.ServeHTTP(statusRec, statusReq)
+
+		var payload map[string]any
+		if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode runtime status: %v", err)
+		}
+		if payload["last_sync_error"] == "" {
+			t.Fatalf("expected last_sync_error to be recorded, got %+v", payload)
+		}
 	})
 
 	t.Run("runtime sync conflict while in progress", func(t *testing.T) {
@@ -654,6 +699,18 @@ func TestRuntimeContract(t *testing.T) {
 
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+
+		statusReq := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		statusRec := httptest.NewRecorder()
+		router.ServeHTTP(statusRec, statusReq)
+
+		var payload map[string]any
+		if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode runtime status: %v", err)
+		}
+		if payload["sync_in_progress"] != true {
+			t.Fatalf("expected sync_in_progress=true, got %+v", payload)
 		}
 	})
 

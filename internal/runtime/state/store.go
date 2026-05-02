@@ -160,6 +160,13 @@ func (s *Store) EndRuntimeSync() {
 	s.syncing = false
 }
 
+func (s *Store) IsRuntimeSyncInProgress() bool {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	return s.syncing
+}
+
 func NewStore(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
@@ -378,6 +385,9 @@ func (s *Store) ReplaceRuntimeConfig(ctx context.Context, req RuntimeSyncRequest
 	if err := setRuntimeMetadataTx(ctx, tx, "last_applied_at", lastSyncedAt); err != nil {
 		return RuntimeSyncResult{}, err
 	}
+	if err := setRuntimeMetadataTx(ctx, tx, "last_sync_error", ""); err != nil {
+		return RuntimeSyncResult{}, err
+	}
 
 	previousCredentials := cloneCredentialsState(s.credentials)
 	s.credentials = credentialsState{APIKeys: nextAPIKeys}
@@ -577,17 +587,20 @@ func (s *Store) ListModels() []ExposedModel {
 }
 
 func (s *Store) GetLastAppliedAt(ctx context.Context) (string, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT value FROM runtime_metadata WHERE key = ?`, "last_applied_at")
+	return s.getRuntimeMetadata(ctx, "last_applied_at")
+}
 
-	var value string
-	err := row.Scan(&value)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return value, nil
+func (s *Store) GetLastSyncError(ctx context.Context) (string, error) {
+	return s.getRuntimeMetadata(ctx, "last_sync_error")
+}
+
+func (s *Store) SetLastSyncError(ctx context.Context, message string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO runtime_metadata(key, value)
+		VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, "last_sync_error", strings.TrimSpace(message))
+	return err
 }
 
 func (s *Store) ValidateModel(modelID string) error {
@@ -810,6 +823,20 @@ func (s *Store) persistCredentialsLocked() error {
 func (s *Store) restoreCredentialsLocked(snapshot credentialsState) error {
 	s.credentials = snapshot
 	return s.persistCredentialsLocked()
+}
+
+func (s *Store) getRuntimeMetadata(ctx context.Context, key string) (string, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM runtime_metadata WHERE key = ?`, key)
+
+	var value string
+	err := row.Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 func (s *Store) apiKeysSnapshot() map[string]string {
