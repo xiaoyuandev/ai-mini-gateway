@@ -1,6 +1,9 @@
 package migration
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 func Apply(db *sql.DB) error {
 	statements := []string{
@@ -26,6 +29,10 @@ func Apply(db *sql.DB) error {
 			position INTEGER NOT NULL,
 			PRIMARY KEY (source_id, model_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS runtime_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 		`INSERT OR IGNORE INTO schema_migrations(version) VALUES (1)`,
 	}
 
@@ -35,5 +42,40 @@ func Apply(db *sql.DB) error {
 		}
 	}
 
+	if err := ensureColumn(db, "model_sources", "external_id", "TEXT"); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func ensureColumn(db *sql.DB, table string, column string, definition string) error {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			typ        string
+			notNull    int
+			defaultVal any
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	_, err = db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
 }

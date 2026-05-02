@@ -74,10 +74,52 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 		web.WriteJSON(w, http.StatusOK, store.ListModelSources())
 	})
 
+	mux.HandleFunc("PUT /admin/runtime/sync", func(w http.ResponseWriter, r *http.Request) {
+		if !store.TryBeginRuntimeSync() {
+			web.WriteError(w, http.StatusConflict, "conflict", "runtime sync already in progress")
+			return
+		}
+		defer store.EndRuntimeSync()
+
+		var req state.RuntimeSyncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			_ = store.SetLastSyncError(r.Context(), err.Error())
+			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+
+		result, err := store.ReplaceRuntimeConfig(r.Context(), req)
+		if err != nil {
+			_ = store.SetLastSyncError(r.Context(), err.Error())
+			writeStoreError(w, err)
+			return
+		}
+
+		proxy.InvalidateModelsCache()
+		web.WriteJSON(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("/admin/model-sources/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/admin/model-sources/")
 		if id == "" {
 			web.WriteError(w, http.StatusNotFound, "not_found", "model source id is required")
+			return
+		}
+		if r.Method == http.MethodPost && strings.HasSuffix(id, "/healthcheck") {
+			sourceID := strings.TrimSuffix(id, "/healthcheck")
+			sourceID = strings.TrimSuffix(sourceID, "/")
+			if sourceID == "" {
+				web.WriteError(w, http.StatusNotFound, "not_found", "model source id is required")
+				return
+			}
+
+			source, err := store.GetModelSource(r.Context(), sourceID)
+			if err != nil {
+				writeStoreError(w, err)
+				return
+			}
+
+			web.WriteJSON(w, http.StatusOK, proxy.HealthcheckSource(r.Context(), source))
 			return
 		}
 

@@ -25,6 +25,14 @@ type Proxy struct {
 
 var ErrModelsUnsupported = errors.New("models_api_unsupported")
 
+type HealthcheckResult struct {
+	Status     string `json:"status"`
+	StatusCode int    `json:"status_code"`
+	LatencyMS  int64  `json:"latency_ms"`
+	Summary    string `json:"summary"`
+	CheckedAt  string `json:"checked_at"`
+}
+
 type modelsEnvelope struct {
 	Data []state.ExposedModel `json:"data"`
 }
@@ -102,6 +110,20 @@ func (p *Proxy) ForwardOperation(ctx context.Context, source state.ModelSource, 
 	return resp, nil
 }
 
+func (p *Proxy) HealthcheckSource(ctx context.Context, source state.ModelSource) HealthcheckResult {
+	start := p.now()
+	result, err := p.doHealthcheck(ctx, source)
+	if err != nil {
+		result.Status = "error"
+		if result.Summary == "" {
+			result.Summary = err.Error()
+		}
+	}
+	result.LatencyMS = p.now().Sub(start).Milliseconds()
+	result.CheckedAt = p.now().UTC().Format(time.RFC3339)
+	return result
+}
+
 func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]state.ExposedModel, error) {
 	if models, err, ok := p.getCachedModels(source.ID); ok {
 		return models, err
@@ -138,6 +160,120 @@ func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]st
 	}
 	p.setCachedModels(source.ID, payload.Data, nil)
 	return cloneModels(payload.Data), nil
+}
+
+func (p *Proxy) doHealthcheck(ctx context.Context, source state.ModelSource) (HealthcheckResult, error) {
+	resp, unsupported, err := p.healthcheckModels(ctx, source)
+	if err == nil && !unsupported {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return HealthcheckResult{
+				StatusCode: resp.StatusCode,
+				Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+			}, fmt.Errorf("healthcheck_failed: status=%d", resp.StatusCode)
+		}
+		return HealthcheckResult{
+			Status:     "ok",
+			StatusCode: resp.StatusCode,
+			Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}, nil
+	}
+	if source.ProviderType != "anthropic-compatible" {
+		return HealthcheckResult{
+			StatusCode: healthcheckStatusCode(resp),
+			Summary:    healthcheckSummary(resp, err),
+		}, err
+	}
+
+	fallbackResult, fallbackErr := p.healthcheckAnthropicCountTokens(ctx, source)
+	if fallbackErr != nil {
+		if err != nil {
+			return HealthcheckResult{
+				StatusCode: healthcheckStatusCode(resp),
+				Summary:    healthcheckSummary(resp, err),
+			}, err
+		}
+		return fallbackResult, fallbackErr
+	}
+	return fallbackResult, nil
+}
+
+func (p *Proxy) healthcheckModels(ctx context.Context, source state.ModelSource) (*http.Response, bool, error) {
+	req, err := newUpstreamRequest(ctx, http.MethodGet, source, providers.ForSource(source).PathForOperation(providers.OperationModels), nil)
+	if err != nil {
+		return nil, false, err
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("upstream_request_failed: %w", err)
+	}
+
+	if providers.ForSource(source).IsOperationUnsupported(providers.OperationModels, resp.StatusCode) {
+		return resp, true, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var payload modelsEnvelope
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return resp, false, fmt.Errorf("invalid_models_response: %w", err)
+		}
+	}
+	return resp, false, nil
+}
+
+func (p *Proxy) healthcheckAnthropicCountTokens(ctx context.Context, source state.ModelSource) (HealthcheckResult, error) {
+	body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"healthcheck"}]}`, source.DefaultModelID))
+	req, err := newUpstreamRequest(ctx, http.MethodPost, source, providers.ForSource(source).PathForOperation(providers.OperationAnthropicCountTokens), bytes.NewReader(body))
+	if err != nil {
+		return HealthcheckResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return HealthcheckResult{}, fmt.Errorf("upstream_request_failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		var payload struct {
+			InputTokens int `json:"input_tokens"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return HealthcheckResult{
+				StatusCode: resp.StatusCode,
+				Summary:    "invalid_count_tokens_response",
+			}, fmt.Errorf("invalid_count_tokens_response: %w", err)
+		}
+		return HealthcheckResult{
+			Status:     "ok",
+			StatusCode: resp.StatusCode,
+			Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}, nil
+	}
+
+	return HealthcheckResult{
+		StatusCode: resp.StatusCode,
+		Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+	}, fmt.Errorf("healthcheck_failed: status=%d", resp.StatusCode)
+}
+
+func healthcheckStatusCode(resp *http.Response) int {
+	if resp == nil {
+		return 0
+	}
+	return resp.StatusCode
+}
+
+func healthcheckSummary(resp *http.Response, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if resp != nil {
+		return fmt.Sprintf("HTTP %d", resp.StatusCode)
+	}
+	return "healthcheck_failed"
 }
 
 func newUpstreamRequest(ctx context.Context, method string, source state.ModelSource, path string, body *bytes.Reader) (*http.Request, error) {

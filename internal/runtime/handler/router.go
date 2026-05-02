@@ -6,22 +6,43 @@ import (
 	"time"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/admin"
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/buildinfo"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/capability"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/health"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/inbound"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
+	runtimestatus "github.com/yuanjunliang/ai-mini-gateway/internal/runtime/status"
 )
 
 func NewRouter(store *state.Store) http.Handler {
-	return NewRouterWithProxy(store, executor.NewProxy())
+	return NewRouterWithProxyAndInfo(store, executor.NewProxy(), buildinfo.Info{
+		RuntimeKind: "ai-mini-gateway",
+		Version:     "dev",
+		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     "./data",
+	})
 }
 
 func NewRouterWithProxy(store *state.Store, proxy *executor.Proxy) http.Handler {
+	return NewRouterWithProxyAndInfo(store, proxy, buildinfo.Info{
+		RuntimeKind: "ai-mini-gateway",
+		Version:     "dev",
+		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     "./data",
+	})
+}
+
+func NewRouterWithProxyAndInfo(store *state.Store, proxy *executor.Proxy, info buildinfo.Info) http.Handler {
 	mux := http.NewServeMux()
 
-	health.Register(mux, store)
-	capability.Register(mux)
+	health.Register(mux, store, info)
+	capability.Register(mux, info)
+	runtimestatus.Register(mux, store, info)
 	inbound.RegisterOpenAI(mux, store, proxy)
 	inbound.RegisterAnthropic(mux, store, proxy)
 	admin.Register(mux, store, proxy)

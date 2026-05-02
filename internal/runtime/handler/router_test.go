@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/buildinfo"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
 )
@@ -119,6 +120,8 @@ func TestRuntimeContract(t *testing.T) {
 				rec.WriteHeader(http.StatusNotFound)
 			case "https://anthropic.example/v1/messages/count_tokens":
 				_ = json.NewEncoder(rec).Encode(map[string]any{"input_tokens": 3})
+			case "https://offline.example/v1/models":
+				rec.WriteHeader(http.StatusUnauthorized)
 			default:
 				rec.WriteHeader(http.StatusNotFound)
 			}
@@ -127,7 +130,14 @@ func TestRuntimeContract(t *testing.T) {
 		}),
 	}
 
-	router := NewRouterWithProxy(store, executor.NewProxyWithClient(client))
+	router := NewRouterWithProxyAndInfo(store, executor.NewProxyWithClient(client), buildinfo.Info{
+		RuntimeKind: "ai-mini-gateway",
+		Version:     "dev",
+		Commit:      "unknown",
+		Host:        "127.0.0.1",
+		Port:        3457,
+		DataDir:     dir,
+	})
 
 	t.Run("health", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -137,6 +147,13 @@ func TestRuntimeContract(t *testing.T) {
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["runtime_kind"] != "ai-mini-gateway" || payload["version"] != "dev" || payload["commit"] != "unknown" {
+			t.Fatalf("unexpected health payload: %+v", payload)
 		}
 	})
 
@@ -149,8 +166,50 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 		}
-		if got := rec.Body.String(); got != "{\"supports_admin_api\":true,\"supports_anthropic_compatible\":true,\"supports_model_source_admin\":true,\"supports_models_api\":true,\"supports_openai_compatible\":true,\"supports_selected_model_admin\":true,\"supports_stream\":true}\n" {
-			t.Fatalf("unexpected body: %q", got)
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["runtime_kind"] != "ai-mini-gateway" ||
+			payload["version"] != "dev" ||
+			payload["commit"] != "unknown" ||
+			payload["supports_openai_compatible"] != true ||
+			payload["supports_anthropic_compatible"] != true ||
+			payload["supports_models_api"] != true ||
+			payload["supports_stream"] != true ||
+			payload["supports_admin_api"] != true ||
+			payload["supports_model_source_admin"] != true ||
+			payload["supports_selected_model_admin"] != true ||
+			payload["supports_source_capabilities"] != true ||
+			payload["supports_atomic_source_sync"] != true ||
+			payload["supports_runtime_version"] != true ||
+			payload["supports_explicit_source_health"] != true {
+			t.Fatalf("unexpected capabilities payload: %+v", payload)
+		}
+	})
+
+	t.Run("runtime status", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["runtime_kind"] != "ai-mini-gateway" ||
+			payload["status"] != "ok" ||
+			payload["version"] != "dev" ||
+			payload["commit"] != "unknown" ||
+			payload["host"] != "127.0.0.1" ||
+			payload["port"] != float64(3457) ||
+			payload["data_dir"] != dir ||
+			payload["sync_in_progress"] != false {
+			t.Fatalf("unexpected runtime status payload: %+v", payload)
 		}
 	})
 
@@ -426,6 +485,232 @@ func TestRuntimeContract(t *testing.T) {
 
 		if rec.Code != http.StatusConflict {
 			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("source healthcheck openai", func(t *testing.T) {
+		sources := store.ListModelSources()
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+sources[0].ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["status_code"] != float64(200) || payload["checked_at"] == "" {
+			t.Fatalf("unexpected healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck anthropic fallback", func(t *testing.T) {
+		sources := store.ListModelSources()
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+sources[1].ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["status_code"] != float64(200) {
+			t.Fatalf("unexpected anthropic healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck error result", func(t *testing.T) {
+		source, err := store.CreateModelSource(t.Context(), state.ModelSourceUpsertRequest{
+			Name:           "Offline",
+			BaseURL:        "https://offline.example/v1",
+			ProviderType:   "openai-compatible",
+			DefaultModelID: "gpt-offline",
+			Enabled:        true,
+			APIKey:         "sk-offline",
+		})
+		if err != nil {
+			t.Fatalf("create source: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+source.ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "error" || payload["status_code"] != float64(401) {
+			t.Fatalf("unexpected error healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck not found", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/src_missing/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("runtime sync replaces config atomically", func(t *testing.T) {
+		openAIHitsBefore := modelsHits["openai"]
+
+		body := []byte(`{
+			"sources":[
+				{
+					"name":"OpenAI Synced",
+					"base_url":"https://openai.example/v1",
+					"provider_type":"openai-compatible",
+					"default_model_id":"gpt-4.1",
+					"exposed_model_ids":["gpt-4.1-mini"],
+					"enabled":true,
+					"position":0,
+					"api_key":"sk-sync"
+				}
+			],
+			"selected_models":[
+				{"model_id":"gpt-4.1-mini","position":0}
+			]
+		}`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["applied_sources"] != float64(1) || payload["applied_selected_models"] != float64(1) || payload["last_synced_at"] == "" {
+			t.Fatalf("unexpected sync payload: %+v", payload)
+		}
+
+		sourcesReq := httptest.NewRequest(http.MethodGet, "/admin/model-sources", nil)
+		sourcesRec := httptest.NewRecorder()
+		router.ServeHTTP(sourcesRec, sourcesReq)
+
+		var sources []map[string]any
+		if err := json.Unmarshal(sourcesRec.Body.Bytes(), &sources); err != nil {
+			t.Fatalf("decode sources: %v", err)
+		}
+		if len(sources) != 1 || sources[0]["name"] != "OpenAI Synced" {
+			t.Fatalf("unexpected sources after sync: %+v", sources)
+		}
+
+		selectedReq := httptest.NewRequest(http.MethodGet, "/admin/selected-models", nil)
+		selectedRec := httptest.NewRecorder()
+		router.ServeHTTP(selectedRec, selectedReq)
+
+		if got := selectedRec.Body.String(); got != "[{\"model_id\":\"gpt-4.1-mini\",\"position\":0}]\n" {
+			t.Fatalf("unexpected selected models after sync: %q", got)
+		}
+
+		modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		modelsRec := httptest.NewRecorder()
+		router.ServeHTTP(modelsRec, modelsReq)
+
+		if modelsRec.Code != http.StatusOK {
+			t.Fatalf("unexpected status after sync models read: %d body=%s", modelsRec.Code, modelsRec.Body.String())
+		}
+		if modelsHits["openai"] != openAIHitsBefore+1 {
+			t.Fatalf("expected openai models fetched once more after sync invalidation, before=%d after=%d", openAIHitsBefore, modelsHits["openai"])
+		}
+	})
+
+	t.Run("runtime sync invalid request preserves previous config", func(t *testing.T) {
+		body := []byte(`{
+			"sources":[
+				{
+					"name":"Broken",
+					"base_url":"https://openai.example/v1",
+					"provider_type":"openai-compatible",
+					"default_model_id":"gpt-4.1",
+					"enabled":true,
+					"position":0,
+					"api_key":"sk-sync"
+				}
+			],
+			"selected_models":[
+				{"model_id":"does-not-exist","position":0}
+			]
+		}`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+
+		sourcesReq := httptest.NewRequest(http.MethodGet, "/admin/model-sources", nil)
+		sourcesRec := httptest.NewRecorder()
+		router.ServeHTTP(sourcesRec, sourcesReq)
+
+		var sources []map[string]any
+		if err := json.Unmarshal(sourcesRec.Body.Bytes(), &sources); err != nil {
+			t.Fatalf("decode sources: %v", err)
+		}
+		if len(sources) != 1 || sources[0]["name"] != "OpenAI Synced" {
+			t.Fatalf("expected previous config to be preserved, got %+v", sources)
+		}
+
+		statusReq := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		statusRec := httptest.NewRecorder()
+		router.ServeHTTP(statusRec, statusReq)
+
+		var payload map[string]any
+		if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode runtime status: %v", err)
+		}
+		if payload["last_sync_error"] == "" {
+			t.Fatalf("expected last_sync_error to be recorded, got %+v", payload)
+		}
+	})
+
+	t.Run("runtime sync conflict while in progress", func(t *testing.T) {
+		if !store.TryBeginRuntimeSync() {
+			t.Fatal("expected to acquire sync guard")
+		}
+		defer store.EndRuntimeSync()
+
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader([]byte(`{"sources":[],"selected_models":[]}`)))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+
+		statusReq := httptest.NewRequest(http.MethodGet, "/runtime/status", nil)
+		statusRec := httptest.NewRecorder()
+		router.ServeHTTP(statusRec, statusReq)
+
+		var payload map[string]any
+		if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode runtime status: %v", err)
+		}
+		if payload["sync_in_progress"] != true {
+			t.Fatalf("expected sync_in_progress=true, got %+v", payload)
 		}
 	})
 
