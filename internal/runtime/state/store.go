@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -28,6 +29,8 @@ var (
 
 type Store struct {
 	mu          sync.Mutex
+	syncMu      sync.Mutex
+	syncing     bool
 	db          *sql.DB
 	dbPath      string
 	credsPath   string
@@ -40,6 +43,7 @@ type credentialsState struct {
 
 type ModelSource struct {
 	ID              string   `json:"id"`
+	ExternalID      string   `json:"external_id,omitempty"`
 	Name            string   `json:"name"`
 	BaseURL         string   `json:"base_url"`
 	ProviderType    string   `json:"provider_type"`
@@ -52,6 +56,7 @@ type ModelSource struct {
 }
 
 type ModelSourceUpsertRequest struct {
+	ExternalID      string   `json:"external_id,omitempty"`
 	Name            string   `json:"name"`
 	BaseURL         string   `json:"base_url"`
 	ProviderType    string   `json:"provider_type"`
@@ -76,6 +81,17 @@ type ExposedModel struct {
 	ID      string `json:"id"`
 	Object  string `json:"object"`
 	OwnedBy string `json:"owned_by"`
+}
+
+type RuntimeSyncRequest struct {
+	Sources        []ModelSourceUpsertRequest `json:"sources"`
+	SelectedModels []SelectedModel            `json:"selected_models"`
+}
+
+type RuntimeSyncResult struct {
+	AppliedSources        int    `json:"applied_sources"`
+	AppliedSelectedModels int    `json:"applied_selected_models"`
+	LastSyncedAt          string `json:"last_synced_at"`
 }
 
 func (s *Store) ListEnabledModelSources() ([]ModelSource, error) {
@@ -113,6 +129,24 @@ func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSo
 	}
 
 	return ModelSource{}, ErrNotFound
+}
+
+func (s *Store) TryBeginRuntimeSync() bool {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	if s.syncing {
+		return false
+	}
+	s.syncing = true
+	return true
+}
+
+func (s *Store) EndRuntimeSync() {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	s.syncing = false
 }
 
 func NewStore(dataDir string) (*Store, error) {
@@ -184,6 +218,7 @@ func (s *Store) CreateModelSource(ctx context.Context, req ModelSourceUpsertRequ
 
 	source := ModelSource{
 		ID:              newID("src"),
+		ExternalID:      strings.TrimSpace(req.ExternalID),
 		Name:            req.Name,
 		BaseURL:         req.BaseURL,
 		ProviderType:    req.ProviderType,
@@ -234,9 +269,9 @@ func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourc
 
 	result, err := tx.ExecContext(ctx, `
 		UPDATE model_sources
-		SET name = ?, base_url = ?, provider_type = ?, default_model_id = ?, enabled = ?
+		SET external_id = ?, name = ?, base_url = ?, provider_type = ?, default_model_id = ?, enabled = ?
 		WHERE id = ?
-	`, req.Name, req.BaseURL, req.ProviderType, req.DefaultModelID, boolToInt(req.Enabled), id)
+	`, strings.TrimSpace(req.ExternalID), req.Name, req.BaseURL, req.ProviderType, req.DefaultModelID, boolToInt(req.Enabled), id)
 	if err != nil {
 		return ModelSource{}, err
 	}
@@ -268,6 +303,91 @@ func (s *Store) UpdateModelSource(ctx context.Context, id string, req ModelSourc
 		return ModelSource{}, err
 	}
 	return withCredentialView(source, s.credentials.APIKeys[id]), nil
+}
+
+func (s *Store) ReplaceRuntimeConfig(ctx context.Context, req RuntimeSyncRequest) (RuntimeSyncResult, error) {
+	if err := validateRuntimeSyncRequest(req); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+
+	normalizedSources := normalizeRuntimeSyncSources(req.Sources)
+	availableModelIDs := availableModelIDsFromRequests(normalizedSources)
+	if err := validateSelectedModels(req.SelectedModels, availableModelIDs); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+	normalizedSelectedModels := normalizeSelectedModels(req.SelectedModels)
+	lastSyncedAt := time.Now().UTC().Format(time.RFC3339)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RuntimeSyncResult{}, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM selected_models`); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM model_source_exposed_models`); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM model_sources`); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+
+	nextAPIKeys := map[string]string{}
+	for i, sourceReq := range normalizedSources {
+		source := ModelSource{
+			ID:              newID("src"),
+			ExternalID:      strings.TrimSpace(sourceReq.ExternalID),
+			Name:            strings.TrimSpace(sourceReq.Name),
+			BaseURL:         strings.TrimSpace(sourceReq.BaseURL),
+			ProviderType:    strings.TrimSpace(sourceReq.ProviderType),
+			DefaultModelID:  strings.TrimSpace(sourceReq.DefaultModelID),
+			ExposedModelIDs: sanitizeModelIDs(sourceReq.ExposedModelIDs),
+			Enabled:         sourceReq.Enabled,
+			Position:        i,
+		}
+		if err := insertModelSourceAtPosition(ctx, tx, source); err != nil {
+			return RuntimeSyncResult{}, err
+		}
+		if err := replaceExposedModels(ctx, tx, source.ID, source.ExposedModelIDs); err != nil {
+			return RuntimeSyncResult{}, err
+		}
+		nextAPIKeys[source.ID] = strings.TrimSpace(sourceReq.APIKey)
+	}
+
+	for i, model := range normalizedSelectedModels {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO selected_models(model_id, position) VALUES(?, ?)`, model.ModelID, i); err != nil {
+			return RuntimeSyncResult{}, err
+		}
+	}
+	if err := setRuntimeMetadataTx(ctx, tx, "last_applied_at", lastSyncedAt); err != nil {
+		return RuntimeSyncResult{}, err
+	}
+
+	previousCredentials := cloneCredentialsState(s.credentials)
+	s.credentials = credentialsState{APIKeys: nextAPIKeys}
+	if err := s.persistCredentialsLocked(); err != nil {
+		s.credentials = previousCredentials
+		return RuntimeSyncResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		restoreErr := s.restoreCredentialsLocked(previousCredentials)
+		if restoreErr != nil {
+			return RuntimeSyncResult{}, fmt.Errorf("commit runtime sync: %w; restore credentials: %v", err, restoreErr)
+		}
+		return RuntimeSyncResult{}, err
+	}
+
+	return RuntimeSyncResult{
+		AppliedSources:        len(normalizedSources),
+		AppliedSelectedModels: len(normalizedSelectedModels),
+		LastSyncedAt:          lastSyncedAt,
+	}, nil
 }
 
 func (s *Store) DeleteModelSource(ctx context.Context, id string) error {
@@ -445,6 +565,20 @@ func (s *Store) ListModels() []ExposedModel {
 	return fallback
 }
 
+func (s *Store) GetLastAppliedAt(ctx context.Context) (string, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT value FROM runtime_metadata WHERE key = ?`, "last_applied_at")
+
+	var value string
+	err := row.Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
 func (s *Store) ValidateModel(modelID string) error {
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
@@ -461,7 +595,7 @@ func (s *Store) ValidateModel(modelID string) error {
 
 func (s *Store) getModelSource(ctx context.Context, id string) (ModelSource, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, name, base_url, provider_type, default_model_id, enabled, position
+		SELECT id, external_id, name, base_url, provider_type, default_model_id, enabled, position
 		FROM model_sources
 		WHERE id = ?
 	`, id)
@@ -470,6 +604,7 @@ func (s *Store) getModelSource(ctx context.Context, id string) (ModelSource, err
 	var enabled int
 	err := row.Scan(
 		&source.ID,
+		&source.ExternalID,
 		&source.Name,
 		&source.BaseURL,
 		&source.ProviderType,
@@ -528,15 +663,23 @@ func (s *Store) listSelectedModels(ctx context.Context) ([]SelectedModel, error)
 
 func insertModelSource(ctx context.Context, tx *sql.Tx, source ModelSource) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO model_sources(id, name, base_url, provider_type, default_model_id, enabled, position)
-		VALUES(?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) + 1 FROM model_sources), 0))
-	`, source.ID, source.Name, source.BaseURL, source.ProviderType, source.DefaultModelID, boolToInt(source.Enabled))
+		INSERT INTO model_sources(id, external_id, name, base_url, provider_type, default_model_id, enabled, position)
+		VALUES(?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(position) + 1 FROM model_sources), 0))
+	`, source.ID, source.ExternalID, source.Name, source.BaseURL, source.ProviderType, source.DefaultModelID, boolToInt(source.Enabled))
+	return err
+}
+
+func insertModelSourceAtPosition(ctx context.Context, tx *sql.Tx, source ModelSource) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO model_sources(id, external_id, name, base_url, provider_type, default_model_id, enabled, position)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+	`, source.ID, source.ExternalID, source.Name, source.BaseURL, source.ProviderType, source.DefaultModelID, boolToInt(source.Enabled), source.Position)
 	return err
 }
 
 func listModelSourcesTx(ctx context.Context, db queryer) ([]ModelSource, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, name, base_url, provider_type, default_model_id, enabled, position
+		SELECT id, external_id, name, base_url, provider_type, default_model_id, enabled, position
 		FROM model_sources
 		ORDER BY position ASC, id ASC
 	`)
@@ -551,6 +694,7 @@ func listModelSourcesTx(ctx context.Context, db queryer) ([]ModelSource, error) 
 		var enabled int
 		if err := rows.Scan(
 			&item.ID,
+			&item.ExternalID,
 			&item.Name,
 			&item.BaseURL,
 			&item.ProviderType,
@@ -652,6 +796,11 @@ func (s *Store) persistCredentialsLocked() error {
 	return writeJSONFile(s.credsPath, s.credentials)
 }
 
+func (s *Store) restoreCredentialsLocked(snapshot credentialsState) error {
+	s.credentials = snapshot
+	return s.persistCredentialsLocked()
+}
+
 func (s *Store) apiKeysSnapshot() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -689,6 +838,63 @@ func validateModelSourceRequest(req ModelSourceUpsertRequest) error {
 	default:
 		return ErrInvalidInput
 	}
+}
+
+func validateRuntimeSyncRequest(req RuntimeSyncRequest) error {
+	for _, source := range req.Sources {
+		if err := validateModelSourceRequest(source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSelectedModels(models []SelectedModel, availableModelIDs map[string]struct{}) error {
+	seen := map[string]struct{}{}
+	for _, model := range models {
+		modelID := strings.TrimSpace(model.ModelID)
+		if modelID == "" {
+			return ErrInvalidInput
+		}
+		if _, ok := seen[modelID]; ok {
+			return ErrConflict
+		}
+		seen[modelID] = struct{}{}
+		if availableModelIDs != nil {
+			if _, ok := availableModelIDs[modelID]; !ok {
+				return ErrInvalidInput
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeRuntimeSyncSources(sources []ModelSourceUpsertRequest) []ModelSourceUpsertRequest {
+	next := append([]ModelSourceUpsertRequest(nil), sources...)
+	slices.SortFunc(next, func(a, b ModelSourceUpsertRequest) int { return a.Position - b.Position })
+	return next
+}
+
+func normalizeSelectedModels(models []SelectedModel) []SelectedModel {
+	next := append([]SelectedModel(nil), models...)
+	slices.SortFunc(next, func(a, b SelectedModel) int { return a.Position - b.Position })
+	return next
+}
+
+func availableModelIDsFromRequests(sources []ModelSourceUpsertRequest) map[string]struct{} {
+	modelIDs := map[string]struct{}{}
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		if modelID := strings.TrimSpace(source.DefaultModelID); modelID != "" {
+			modelIDs[modelID] = struct{}{}
+		}
+		for _, modelID := range sanitizeModelIDs(source.ExposedModelIDs) {
+			modelIDs[modelID] = struct{}{}
+		}
+	}
+	return modelIDs
 }
 
 func appendFallbackModels(items []ExposedModel, seen map[string]struct{}, source ModelSource) []ExposedModel {
@@ -748,6 +954,16 @@ func cloneSources(items []ModelSource, keys map[string]string) []ModelSource {
 	return result
 }
 
+func cloneCredentialsState(state credentialsState) credentialsState {
+	cloned := credentialsState{
+		APIKeys: map[string]string{},
+	}
+	for key, value := range state.APIKeys {
+		cloned.APIKeys[key] = value
+	}
+	return cloned
+}
+
 func withCredentialView(item ModelSource, apiKey string) ModelSource {
 	item.APIKey = ""
 	item.APIKeyMasked = maskAPIKey(apiKey)
@@ -800,6 +1016,15 @@ func boolToInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func setRuntimeMetadataTx(ctx context.Context, tx *sql.Tx, key string, value string) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO runtime_metadata(key, value)
+		VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, value)
+	return err
 }
 
 type queryer interface {

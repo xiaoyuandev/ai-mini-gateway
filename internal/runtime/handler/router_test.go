@@ -429,6 +429,127 @@ func TestRuntimeContract(t *testing.T) {
 		}
 	})
 
+	t.Run("runtime sync replaces config atomically", func(t *testing.T) {
+		body := []byte(`{
+			"sources":[
+				{
+					"name":"OpenAI Synced",
+					"base_url":"https://openai.example/v1",
+					"provider_type":"openai-compatible",
+					"default_model_id":"gpt-4.1",
+					"exposed_model_ids":["gpt-4.1-mini"],
+					"enabled":true,
+					"position":0,
+					"api_key":"sk-sync"
+				}
+			],
+			"selected_models":[
+				{"model_id":"gpt-4.1-mini","position":0}
+			]
+		}`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["applied_sources"] != float64(1) || payload["applied_selected_models"] != float64(1) || payload["last_synced_at"] == "" {
+			t.Fatalf("unexpected sync payload: %+v", payload)
+		}
+
+		sourcesReq := httptest.NewRequest(http.MethodGet, "/admin/model-sources", nil)
+		sourcesRec := httptest.NewRecorder()
+		router.ServeHTTP(sourcesRec, sourcesReq)
+
+		var sources []map[string]any
+		if err := json.Unmarshal(sourcesRec.Body.Bytes(), &sources); err != nil {
+			t.Fatalf("decode sources: %v", err)
+		}
+		if len(sources) != 1 || sources[0]["name"] != "OpenAI Synced" {
+			t.Fatalf("unexpected sources after sync: %+v", sources)
+		}
+
+		selectedReq := httptest.NewRequest(http.MethodGet, "/admin/selected-models", nil)
+		selectedRec := httptest.NewRecorder()
+		router.ServeHTTP(selectedRec, selectedReq)
+
+		if got := selectedRec.Body.String(); got != "[{\"model_id\":\"gpt-4.1-mini\",\"position\":0}]\n" {
+			t.Fatalf("unexpected selected models after sync: %q", got)
+		}
+
+		modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		modelsRec := httptest.NewRecorder()
+		router.ServeHTTP(modelsRec, modelsReq)
+
+		if modelsRec.Code != http.StatusOK {
+			t.Fatalf("unexpected status after sync models read: %d body=%s", modelsRec.Code, modelsRec.Body.String())
+		}
+		if modelsHits["openai"] != 3 {
+			t.Fatalf("expected openai models fetched again after sync invalidation, got %d", modelsHits["openai"])
+		}
+	})
+
+	t.Run("runtime sync invalid request preserves previous config", func(t *testing.T) {
+		body := []byte(`{
+			"sources":[
+				{
+					"name":"Broken",
+					"base_url":"https://openai.example/v1",
+					"provider_type":"openai-compatible",
+					"default_model_id":"gpt-4.1",
+					"enabled":true,
+					"position":0,
+					"api_key":"sk-sync"
+				}
+			],
+			"selected_models":[
+				{"model_id":"does-not-exist","position":0}
+			]
+		}`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+
+		sourcesReq := httptest.NewRequest(http.MethodGet, "/admin/model-sources", nil)
+		sourcesRec := httptest.NewRecorder()
+		router.ServeHTTP(sourcesRec, sourcesReq)
+
+		var sources []map[string]any
+		if err := json.Unmarshal(sourcesRec.Body.Bytes(), &sources); err != nil {
+			t.Fatalf("decode sources: %v", err)
+		}
+		if len(sources) != 1 || sources[0]["name"] != "OpenAI Synced" {
+			t.Fatalf("expected previous config to be preserved, got %+v", sources)
+		}
+	})
+
+	t.Run("runtime sync conflict while in progress", func(t *testing.T) {
+		if !store.TryBeginRuntimeSync() {
+			t.Fatal("expected to acquire sync guard")
+		}
+		defer store.EndRuntimeSync()
+
+		req := httptest.NewRequest(http.MethodPut, "/admin/runtime/sync", bytes.NewReader([]byte(`{"sources":[],"selected_models":[]}`)))
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("model source admin invalid provider rejected", func(t *testing.T) {
 		body := []byte(`{"name":"Bad","base_url":"https://bad.example/v1","provider_type":"custom","default_model_id":"x","enabled":true,"api_key":"sk-test"}`)
 		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources", bytes.NewReader(body))

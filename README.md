@@ -47,6 +47,7 @@ CORE_DATA_DIR=./data \
 9. `GET/PUT /admin/selected-models`
 10. `GET /capabilities`
 11. `GET /admin/model-sources/capabilities`
+12. `PUT /admin/runtime/sync`
 
 ## Embedded Validation
 

@@ -74,6 +74,29 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 		web.WriteJSON(w, http.StatusOK, store.ListModelSources())
 	})
 
+	mux.HandleFunc("PUT /admin/runtime/sync", func(w http.ResponseWriter, r *http.Request) {
+		if !store.TryBeginRuntimeSync() {
+			web.WriteError(w, http.StatusConflict, "conflict", "runtime sync already in progress")
+			return
+		}
+		defer store.EndRuntimeSync()
+
+		var req state.RuntimeSyncRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			web.WriteError(w, http.StatusBadRequest, "invalid_json", err.Error())
+			return
+		}
+
+		result, err := store.ReplaceRuntimeConfig(r.Context(), req)
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+
+		proxy.InvalidateModelsCache()
+		web.WriteJSON(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("/admin/model-sources/", func(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/admin/model-sources/")
 		if id == "" {
