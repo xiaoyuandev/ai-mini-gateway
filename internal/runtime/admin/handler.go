@@ -103,6 +103,23 @@ func Register(mux *http.ServeMux, store *state.Store, proxy *executor.Proxy) {
 			web.WriteError(w, http.StatusNotFound, "not_found", "model source id is required")
 			return
 		}
+		if r.Method == http.MethodPost && strings.HasSuffix(id, "/healthcheck") {
+			sourceID := strings.TrimSuffix(id, "/healthcheck")
+			sourceID = strings.TrimSuffix(sourceID, "/")
+			if sourceID == "" {
+				web.WriteError(w, http.StatusNotFound, "not_found", "model source id is required")
+				return
+			}
+
+			source, err := store.GetModelSource(r.Context(), sourceID)
+			if err != nil {
+				writeStoreError(w, err)
+				return
+			}
+
+			web.WriteJSON(w, http.StatusOK, proxy.HealthcheckSource(r.Context(), source))
+			return
+		}
 
 		switch r.Method {
 		case http.MethodPut:

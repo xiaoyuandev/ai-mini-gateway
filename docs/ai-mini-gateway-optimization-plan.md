@@ -61,11 +61,11 @@
 
 1. 原子化全量 sync 接口
 2. runtime 版本 / commit 暴露
+3. source 显式 healthcheck
 
 当前仍缺少的 runtime 协作能力：
 
-1. 显式 source healthcheck / validate
-2. 更稳定的 runtime status 输出
+1. 更稳定的 runtime status 输出
 
 ## 6. 阶段计划
 
@@ -205,7 +205,7 @@ Status: [x] Completed
 
 ### 阶段 C: Source 显式 Healthcheck / Validate
 
-Status: [ ] Pending
+Status: [x] Completed
 
 #### 目标
 

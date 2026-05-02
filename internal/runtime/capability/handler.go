@@ -23,7 +23,7 @@ func Register(mux *http.ServeMux, info buildinfo.Info) {
 			"supports_source_capabilities":    true,
 			"supports_atomic_source_sync":     true,
 			"supports_runtime_version":        true,
-			"supports_explicit_source_health": false,
+			"supports_explicit_source_health": true,
 		})
 	})
 }

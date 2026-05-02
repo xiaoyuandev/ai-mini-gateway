@@ -119,6 +119,8 @@ func TestRuntimeContract(t *testing.T) {
 				rec.WriteHeader(http.StatusNotFound)
 			case "https://anthropic.example/v1/messages/count_tokens":
 				_ = json.NewEncoder(rec).Encode(map[string]any{"input_tokens": 3})
+			case "https://offline.example/v1/models":
+				rec.WriteHeader(http.StatusUnauthorized)
 			default:
 				rec.WriteHeader(http.StatusNotFound)
 			}
@@ -173,7 +175,7 @@ func TestRuntimeContract(t *testing.T) {
 			payload["supports_source_capabilities"] != true ||
 			payload["supports_atomic_source_sync"] != true ||
 			payload["supports_runtime_version"] != true ||
-			payload["supports_explicit_source_health"] != false {
+			payload["supports_explicit_source_health"] != true {
 			t.Fatalf("unexpected capabilities payload: %+v", payload)
 		}
 	})
@@ -453,7 +455,88 @@ func TestRuntimeContract(t *testing.T) {
 		}
 	})
 
+	t.Run("source healthcheck openai", func(t *testing.T) {
+		sources := store.ListModelSources()
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+sources[0].ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["status_code"] != float64(200) || payload["checked_at"] == "" {
+			t.Fatalf("unexpected healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck anthropic fallback", func(t *testing.T) {
+		sources := store.ListModelSources()
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+sources[1].ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["status_code"] != float64(200) {
+			t.Fatalf("unexpected anthropic healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck error result", func(t *testing.T) {
+		source, err := store.CreateModelSource(t.Context(), state.ModelSourceUpsertRequest{
+			Name:           "Offline",
+			BaseURL:        "https://offline.example/v1",
+			ProviderType:   "openai-compatible",
+			DefaultModelID: "gpt-offline",
+			Enabled:        true,
+			APIKey:         "sk-offline",
+		})
+		if err != nil {
+			t.Fatalf("create source: %v", err)
+		}
+
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/"+source.ID+"/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "error" || payload["status_code"] != float64(401) {
+			t.Fatalf("unexpected error healthcheck payload: %+v", payload)
+		}
+	})
+
+	t.Run("source healthcheck not found", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/admin/model-sources/src_missing/healthcheck", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+	})
+
 	t.Run("runtime sync replaces config atomically", func(t *testing.T) {
+		openAIHitsBefore := modelsHits["openai"]
+
 		body := []byte(`{
 			"sources":[
 				{
@@ -514,8 +597,8 @@ func TestRuntimeContract(t *testing.T) {
 		if modelsRec.Code != http.StatusOK {
 			t.Fatalf("unexpected status after sync models read: %d body=%s", modelsRec.Code, modelsRec.Body.String())
 		}
-		if modelsHits["openai"] != 3 {
-			t.Fatalf("expected openai models fetched again after sync invalidation, got %d", modelsHits["openai"])
+		if modelsHits["openai"] != openAIHitsBefore+1 {
+			t.Fatalf("expected openai models fetched once more after sync invalidation, before=%d after=%d", openAIHitsBefore, modelsHits["openai"])
 		}
 	})
 

@@ -112,6 +112,17 @@ func (s *Store) ListEnabledModelSources() ([]ModelSource, error) {
 	return result, nil
 }
 
+func (s *Store) GetModelSource(ctx context.Context, id string) (ModelSource, error) {
+	source, err := s.getModelSource(ctx, id)
+	if err != nil {
+		return ModelSource{}, err
+	}
+
+	apiKeys := s.apiKeysSnapshot()
+	source.APIKey = apiKeys[source.ID]
+	return source, nil
+}
+
 func (s *Store) ResolveModelSource(modelID string, providerType string) (ModelSource, error) {
 	sources, err := s.ListEnabledModelSources()
 	if err != nil {
