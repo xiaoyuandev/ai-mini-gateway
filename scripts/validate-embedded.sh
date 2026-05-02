@@ -21,7 +21,10 @@ trap cleanup EXIT
 
 go build -o "$BIN_PATH" ./cmd/gateway
 
-"$BIN_PATH" --host "$HOST" --port "$PORT" --data-dir "$DATA_DIR" --models-cache-ttl 15s &
+LOCAL_GATEWAY_RUNTIME_HOST="$HOST" \
+LOCAL_GATEWAY_RUNTIME_PORT="$PORT" \
+CORE_DATA_DIR="$DATA_DIR" \
+"$BIN_PATH" --models-cache-ttl 15s &
 GATEWAY_PID=$!
 
 for _ in {1..20}; do
