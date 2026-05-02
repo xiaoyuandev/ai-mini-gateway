@@ -57,15 +57,15 @@
 6. 基础 source CRUD / reorder
 7. OpenAI-compatible / Anthropic-compatible inference endpoints
 
-当前仍缺少的 runtime 协作能力：
-
-1. runtime 版本 / commit 暴露
-2. 显式 source healthcheck / validate
-3. 更稳定的 runtime status 输出
-
 当前已完成：
 
 1. 原子化全量 sync 接口
+2. runtime 版本 / commit 暴露
+
+当前仍缺少的 runtime 协作能力：
+
+1. 显式 source healthcheck / validate
+2. 更稳定的 runtime status 输出
 
 ## 6. 阶段计划
 
@@ -149,7 +149,7 @@ Status: [x] Completed
 
 ### 阶段 B: Runtime 版本信息与能力声明
 
-Status: [ ] Pending
+Status: [x] Completed
 
 #### 目标
 

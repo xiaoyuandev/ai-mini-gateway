@@ -138,6 +138,13 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
 		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["status"] != "ok" || payload["runtime_kind"] != "ai-mini-gateway" || payload["version"] != "dev" || payload["commit"] != "unknown" {
+			t.Fatalf("unexpected health payload: %+v", payload)
+		}
 	})
 
 	t.Run("capabilities", func(t *testing.T) {
@@ -149,8 +156,25 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 		}
-		if got := rec.Body.String(); got != "{\"supports_admin_api\":true,\"supports_anthropic_compatible\":true,\"supports_model_source_admin\":true,\"supports_models_api\":true,\"supports_openai_compatible\":true,\"supports_selected_model_admin\":true,\"supports_stream\":true}\n" {
-			t.Fatalf("unexpected body: %q", got)
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["runtime_kind"] != "ai-mini-gateway" ||
+			payload["version"] != "dev" ||
+			payload["commit"] != "unknown" ||
+			payload["supports_openai_compatible"] != true ||
+			payload["supports_anthropic_compatible"] != true ||
+			payload["supports_models_api"] != true ||
+			payload["supports_stream"] != true ||
+			payload["supports_admin_api"] != true ||
+			payload["supports_model_source_admin"] != true ||
+			payload["supports_selected_model_admin"] != true ||
+			payload["supports_source_capabilities"] != true ||
+			payload["supports_atomic_source_sync"] != true ||
+			payload["supports_runtime_version"] != true ||
+			payload["supports_explicit_source_health"] != false {
+			t.Fatalf("unexpected capabilities payload: %+v", payload)
 		}
 	})
 

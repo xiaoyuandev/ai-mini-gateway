@@ -10,10 +10,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/buildinfo"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/config"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/handler"
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/state"
+)
+
+var (
+	version = "dev"
+	commit  = "unknown"
 )
 
 func main() {
@@ -32,8 +38,12 @@ func main() {
 	proxy := executor.NewProxyWithClientAndTTL(&http.Client{Timeout: 5 * time.Minute}, cfg.ModelsCacheTTL)
 
 	srv := &http.Server{
-		Addr:              cfg.Address(),
-		Handler:           handler.NewRouterWithProxy(store, proxy),
+		Addr: cfg.Address(),
+		Handler: handler.NewRouterWithProxyAndInfo(store, proxy, buildinfo.Info{
+			RuntimeKind: "ai-mini-gateway",
+			Version:     version,
+			Commit:      commit,
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

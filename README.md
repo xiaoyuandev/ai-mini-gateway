@@ -15,6 +15,15 @@
 go build -o ./bin/ai-mini-gateway ./cmd/gateway
 ```
 
+发布构建建议注入版本信息：
+
+```bash
+go build \
+  -ldflags "-X main.version=0.1.0 -X main.commit=$(git rev-parse --short HEAD)" \
+  -o ./bin/ai-mini-gateway \
+  ./cmd/gateway
+```
+
 ## Run
 
 ```bash
@@ -99,3 +108,5 @@ web/
 1. runtime 状态持久化使用 SQLite，credentials 保持独立 JSON 文件
 2. 当前 provider 执行链路已支持基于 compatible HTTP contract 的真实上游转发
 3. provider 抽象已覆盖认证头、path、header forwarding、请求校验、错误归一和基础 capability 状态
+4. `/health` 会返回 `runtime_kind`、`version`、`commit`
+5. `/capabilities` 会返回增强能力字段，例如 `supports_atomic_source_sync` 和 `supports_runtime_version`
