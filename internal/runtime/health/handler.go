@@ -19,10 +19,11 @@ func Register(mux *http.ServeMux, store *state.Store, info buildinfo.Info) {
 		}
 
 		web.WriteJSON(w, http.StatusOK, map[string]string{
-			"status":       "ok",
-			"version":      info.Version,
-			"commit":       info.Commit,
-			"runtime_kind": info.RuntimeKind,
+			"status":           "ok",
+			"version":          info.Version,
+			"commit":           info.Commit,
+			"contract_version": info.ContractVersion,
+			"runtime_kind":     info.RuntimeKind,
 		})
 	})
 }

@@ -15,6 +15,18 @@
 go build -o ./bin/ai-mini-gateway ./cmd/gateway
 ```
 
+如果希望用户安装后直接通过一条命令启动，推荐使用：
+
+```bash
+go install github.com/yuanjunliang/ai-mini-gateway@latest
+```
+
+安装完成后可直接执行：
+
+```bash
+ai-mini-gateway
+```
+
 发布构建建议注入版本信息：
 
 ```bash
@@ -24,7 +36,34 @@ go build \
   ./cmd/gateway
 ```
 
+其中：
+
+1. `version` 对应 Git tag / GitHub Release 版本
+2. `contract_version` 对应对外 HTTP contract 兼容版本，当前固定为 `v1`
+3. `contract_version` 当前仅从 `/health` 暴露，作为调用方读取兼容版本的单一入口
+
 ## Run
+
+最简单的启动方式：
+
+```bash
+go run .
+```
+
+或者安装后直接：
+
+```bash
+ai-mini-gateway
+```
+
+默认参数如下：
+
+1. `host=127.0.0.1`
+2. `port=3457`
+3. `data-dir=./data`
+4. `models-cache-ttl=15s`
+
+所以用户不传参数也可以直接启动。
 
 ```bash
 go run ./cmd/gateway --host 127.0.0.1 --port 3457 --data-dir ./data
@@ -41,6 +80,16 @@ LOCAL_GATEWAY_RUNTIME_HOST=127.0.0.1 \
 LOCAL_GATEWAY_RUNTIME_PORT=3457 \
 CORE_DATA_DIR=./data \
 ./bin/ai-mini-gateway --models-cache-ttl 15s
+```
+
+如果只想覆盖默认端口或数据目录，也可以只传单个参数：
+
+```bash
+ai-mini-gateway --port 8080
+```
+
+```bash
+ai-mini-gateway --data-dir /tmp/ai-mini-gateway
 ```
 
 ## Implemented Endpoints
@@ -110,7 +159,7 @@ web/
 1. runtime 状态持久化使用 SQLite，credentials 保持独立 JSON 文件
 2. 当前 provider 执行链路已支持基于 compatible HTTP contract 的真实上游转发
 3. provider 抽象已覆盖认证头、path、header forwarding、请求校验、错误归一和基础 capability 状态
-4. `/health` 会返回 `runtime_kind`、`version`、`commit`
+4. `/health` 会返回 `runtime_kind`、`version`、`commit`、`contract_version`
 5. `/capabilities` 会返回增强能力字段，例如 `supports_atomic_source_sync` 和 `supports_runtime_version`
 6. `POST /admin/model-sources/:id/healthcheck` 可显式校验单条 source 的可达性
 7. `GET /runtime/status` 会返回 `last_applied_at`、`sync_in_progress`、`last_sync_error` 等稳定运行态信息
