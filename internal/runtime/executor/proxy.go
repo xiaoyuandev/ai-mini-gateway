@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -65,18 +66,7 @@ func NewProxyWithClientAndTTL(client *http.Client, ttl time.Duration) *Proxy {
 
 func (p *Proxy) Forward(ctx context.Context, source state.ModelSource, path string, incomingHeader http.Header, body []byte) (*http.Response, error) {
 	provider := providers.ForSource(source)
-	req, err := newUpstreamRequest(ctx, http.MethodPost, source, path, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-
-	copyHeader(req.Header, incomingHeader, provider)
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("upstream_request_failed: %w", err)
-	}
-	return resp, nil
+	return p.doUpstreamRequest(ctx, source, http.MethodPost, path, incomingHeader, body, provider)
 }
 
 func (p *Proxy) ForwardOperation(ctx context.Context, source state.ModelSource, operation providers.Operation, incomingHeader http.Header, body []byte) (*http.Response, error) {
@@ -129,12 +119,15 @@ func (p *Proxy) FetchModels(ctx context.Context, source state.ModelSource) ([]st
 		return models, err
 	}
 
-	req, err := newUpstreamRequest(ctx, http.MethodGet, source, providers.ForSource(source).PathForOperation(providers.OperationModels), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := p.client.Do(req)
+	resp, err := p.doUpstreamRequest(
+		ctx,
+		source,
+		http.MethodGet,
+		providers.ForSource(source).PathForOperation(providers.OperationModels),
+		nil,
+		nil,
+		providers.ForSource(source),
+	)
 	if err != nil {
 		cachedErr := fmt.Errorf("upstream_models_failed: %w", err)
 		p.setCachedModels(source.ID, nil, cachedErr)
@@ -184,26 +177,39 @@ func (p *Proxy) doHealthcheck(ctx context.Context, source state.ModelSource) (He
 		}, err
 	}
 
-	fallbackResult, fallbackErr := p.healthcheckAnthropicCountTokens(ctx, source)
-	if fallbackErr != nil {
-		if err != nil {
-			return HealthcheckResult{
-				StatusCode: healthcheckStatusCode(resp),
-				Summary:    healthcheckSummary(resp, err),
-			}, err
-		}
-		return fallbackResult, fallbackErr
+	messageResult, messageErr := p.healthcheckAnthropicMessages(ctx, source)
+	if messageErr == nil {
+		return messageResult, nil
 	}
-	return fallbackResult, nil
+
+	countTokensResult, countTokensErr := p.healthcheckAnthropicCountTokens(ctx, source)
+	if countTokensErr == nil {
+		return countTokensResult, nil
+	}
+
+	switch {
+	case err != nil:
+		return HealthcheckResult{
+			StatusCode: healthcheckStatusCode(resp),
+			Summary:    healthcheckSummary(resp, err),
+		}, err
+	case messageErr != nil:
+		return messageResult, messageErr
+	default:
+		return countTokensResult, countTokensErr
+	}
 }
 
 func (p *Proxy) healthcheckModels(ctx context.Context, source state.ModelSource) (*http.Response, bool, error) {
-	req, err := newUpstreamRequest(ctx, http.MethodGet, source, providers.ForSource(source).PathForOperation(providers.OperationModels), nil)
-	if err != nil {
-		return nil, false, err
-	}
-
-	resp, err := p.client.Do(req)
+	resp, err := p.doUpstreamRequest(
+		ctx,
+		source,
+		http.MethodGet,
+		providers.ForSource(source).PathForOperation(providers.OperationModels),
+		nil,
+		nil,
+		providers.ForSource(source),
+	)
 	if err != nil {
 		return nil, false, fmt.Errorf("upstream_request_failed: %w", err)
 	}
@@ -223,14 +229,18 @@ func (p *Proxy) healthcheckModels(ctx context.Context, source state.ModelSource)
 
 func (p *Proxy) healthcheckAnthropicCountTokens(ctx context.Context, source state.ModelSource) (HealthcheckResult, error) {
 	body := []byte(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"healthcheck"}]}`, source.DefaultModelID))
-	req, err := newUpstreamRequest(ctx, http.MethodPost, source, providers.ForSource(source).PathForOperation(providers.OperationAnthropicCountTokens), bytes.NewReader(body))
-	if err != nil {
-		return HealthcheckResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := p.client.Do(req)
+	resp, err := p.doUpstreamRequest(
+		ctx,
+		source,
+		http.MethodPost,
+		providers.ForSource(source).PathForOperation(providers.OperationAnthropicCountTokens),
+		http.Header{
+			"Content-Type":      []string{"application/json"},
+			"anthropic-version": []string{"2023-06-01"},
+		},
+		body,
+		providers.ForSource(source),
+	)
 	if err != nil {
 		return HealthcheckResult{}, fmt.Errorf("upstream_request_failed: %w", err)
 	}
@@ -246,6 +256,39 @@ func (p *Proxy) healthcheckAnthropicCountTokens(ctx context.Context, source stat
 				Summary:    "invalid_count_tokens_response",
 			}, fmt.Errorf("invalid_count_tokens_response: %w", err)
 		}
+		return HealthcheckResult{
+			Status:     "ok",
+			StatusCode: resp.StatusCode,
+			Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}, nil
+	}
+
+	return HealthcheckResult{
+		StatusCode: resp.StatusCode,
+		Summary:    fmt.Sprintf("HTTP %d", resp.StatusCode),
+	}, fmt.Errorf("healthcheck_failed: status=%d", resp.StatusCode)
+}
+
+func (p *Proxy) healthcheckAnthropicMessages(ctx context.Context, source state.ModelSource) (HealthcheckResult, error) {
+	body := []byte(fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"healthcheck"}]}`, source.DefaultModelID))
+	resp, err := p.doUpstreamRequest(
+		ctx,
+		source,
+		http.MethodPost,
+		providers.ForSource(source).PathForOperation(providers.OperationAnthropicMessages),
+		http.Header{
+			"Content-Type":      []string{"application/json"},
+			"anthropic-version": []string{"2023-06-01"},
+		},
+		body,
+		providers.ForSource(source),
+	)
+	if err != nil {
+		return HealthcheckResult{}, fmt.Errorf("upstream_request_failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return HealthcheckResult{
 			Status:     "ok",
 			StatusCode: resp.StatusCode,
@@ -276,18 +319,135 @@ func healthcheckSummary(resp *http.Response, err error) string {
 	return "healthcheck_failed"
 }
 
-func newUpstreamRequest(ctx context.Context, method string, source state.ModelSource, path string, body *bytes.Reader) (*http.Request, error) {
-	url := strings.TrimRight(source.BaseURL, "/") + path
+func (p *Proxy) doUpstreamRequest(
+	ctx context.Context,
+	source state.ModelSource,
+	method string,
+	path string,
+	incomingHeader http.Header,
+	body []byte,
+	provider providers.Provider,
+) (*http.Response, error) {
+	candidates := upstreamCandidateURLs(source.BaseURL, path)
+	var lastResp *http.Response
+
+	for index, candidate := range candidates {
+		req, err := newUpstreamRequest(ctx, method, source, candidate, body)
+		if err != nil {
+			return nil, err
+		}
+
+		copyHeader(req.Header, incomingHeader, provider)
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("upstream_request_failed: %w", err)
+		}
+		if shouldRetryWithNextUpstreamCandidate(resp.StatusCode) && index < len(candidates)-1 {
+			resp.Body.Close()
+			lastResp = resp
+			continue
+		}
+
+		return resp, nil
+	}
+
+	if lastResp != nil {
+		return lastResp, nil
+	}
+
+	return nil, fmt.Errorf("upstream_request_failed: no upstream candidates")
+}
+
+func newUpstreamRequest(ctx context.Context, method string, source state.ModelSource, rawURL string, body []byte) (*http.Request, error) {
 	var reader httpBody
 	if body != nil {
-		reader = body
+		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, reader)
 	if err != nil {
 		return nil, err
 	}
 	providers.ForSource(source).ApplyAuthHeader(req.Header, source)
 	return req, nil
+}
+
+func upstreamCandidateURLs(baseURL string, path string) []string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return nil
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return []string{strings.TrimRight(trimmed, "/") + path}
+	}
+
+	candidates := make([]string, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	addCandidate := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	versioned := *parsed
+	versioned.Path = ensureVersionedBasePath(parsed.Path)
+	versioned.RawPath = versioned.Path
+	addCandidate(joinUpstreamURL(&versioned, path))
+
+	legacy := *parsed
+	legacy.Path = strings.TrimSuffix(parsed.Path, "/")
+	legacy.RawPath = legacy.Path
+	addCandidate(joinUpstreamURL(&legacy, path))
+
+	return candidates
+}
+
+func ensureVersionedBasePath(path string) string {
+	trimmed := strings.TrimSuffix(path, "/")
+	switch {
+	case trimmed == "":
+		return "/v1"
+	case strings.HasSuffix(trimmed, "/v1"):
+		return trimmed
+	default:
+		return trimmed + "/v1"
+	}
+}
+
+func joinUpstreamURL(base *url.URL, path string) string {
+	if base == nil {
+		return path
+	}
+
+	joined := *base
+	basePath := strings.TrimSuffix(joined.Path, "/")
+	switch {
+	case basePath == "":
+		joined.Path = path
+	case strings.HasPrefix(path, "/"):
+		joined.Path = basePath + path
+	default:
+		joined.Path = basePath + "/" + path
+	}
+	joined.RawPath = joined.Path
+	return joined.String()
+}
+
+func shouldRetryWithNextUpstreamCandidate(statusCode int) bool {
+	switch statusCode {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+		return true
+	default:
+		return false
+	}
 }
 
 func copyHeader(dst http.Header, src http.Header, provider providers.Provider) {
