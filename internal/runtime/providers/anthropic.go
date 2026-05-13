@@ -10,10 +10,15 @@ import (
 type anthropicProvider struct{}
 
 func (anthropicProvider) ApplyAuthHeader(header http.Header, source state.ModelSource) {
-	if source.APIKey == "" || header.Get("x-api-key") != "" {
+	if source.APIKey == "" {
 		return
 	}
-	header.Set("x-api-key", source.APIKey)
+	if header.Get("x-api-key") == "" {
+		header.Set("x-api-key", source.APIKey)
+	}
+	if header.Get("Authorization") == "" {
+		header.Set("Authorization", "Bearer "+source.APIKey)
+	}
 }
 
 func (anthropicProvider) DefaultCapabilities() Capabilities {
