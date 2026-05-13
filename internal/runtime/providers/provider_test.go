@@ -139,6 +139,9 @@ func TestAnthropicProvider(t *testing.T) {
 		if got := header.Get("x-api-key"); got != "sk-anthropic" {
 			t.Fatalf("unexpected x-api-key header: %q", got)
 		}
+		if got := header.Get("Authorization"); got != "Bearer sk-anthropic" {
+			t.Fatalf("unexpected Authorization header: %q", got)
+		}
 	})
 
 	t.Run("preserve existing api key header", func(t *testing.T) {
@@ -146,6 +149,18 @@ func TestAnthropicProvider(t *testing.T) {
 		header.Set("x-api-key", "existing")
 		provider.ApplyAuthHeader(header, source)
 		if got := header.Get("x-api-key"); got != "existing" {
+			t.Fatalf("unexpected x-api-key header: %q", got)
+		}
+	})
+
+	t.Run("preserve existing authorization header", func(t *testing.T) {
+		header := http.Header{}
+		header.Set("Authorization", "Bearer existing")
+		provider.ApplyAuthHeader(header, source)
+		if got := header.Get("Authorization"); got != "Bearer existing" {
+			t.Fatalf("unexpected Authorization header: %q", got)
+		}
+		if got := header.Get("x-api-key"); got != "sk-anthropic" {
 			t.Fatalf("unexpected x-api-key header: %q", got)
 		}
 	})
