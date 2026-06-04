@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/buildinfo"
@@ -14,6 +15,7 @@ import (
 
 func TestRuntimeContract(t *testing.T) {
 	modelsHits := map[string]int{}
+	responsesHits := map[string]int{}
 
 	dir := t.TempDir()
 	store, err := state.NewStore(dir)
@@ -26,7 +28,7 @@ func TestRuntimeContract(t *testing.T) {
 		BaseURL:         "https://openai.example/v1",
 		ProviderType:    "openai-compatible",
 		DefaultModelID:  "gpt-4.1",
-		ExposedModelIDs: []string{"gpt-4.1-mini", "gpt-upstream-error"},
+		ExposedModelIDs: []string{"gpt-4.1-mini", "gpt-upstream-error", "gpt-responses-fallback"},
 		Enabled:         true,
 		APIKey:          "sk-test",
 	})
@@ -50,6 +52,7 @@ func TestRuntimeContract(t *testing.T) {
 		{ModelID: "claude-3-haiku", Position: 1},
 		{ModelID: "gpt-4.1-mini", Position: 2},
 		{ModelID: "gpt-upstream-error", Position: 3},
+		{ModelID: "gpt-responses-fallback", Position: 4},
 	}); err != nil {
 		t.Fatalf("replace selected models: %v", err)
 	}
@@ -66,6 +69,7 @@ func TestRuntimeContract(t *testing.T) {
 						{"id": "gpt-4.1", "object": "model", "owned_by": "openai-compatible"},
 						{"id": "gpt-4.1-mini", "object": "model", "owned_by": "openai-compatible"},
 						{"id": "gpt-upstream-error", "object": "model", "owned_by": "openai-compatible"},
+						{"id": "gpt-responses-fallback", "object": "model", "owned_by": "openai-compatible"},
 					},
 				})
 			case "https://openai.example/v1/chat/completions":
@@ -88,6 +92,23 @@ func TestRuntimeContract(t *testing.T) {
 					})
 					return rec.Result(), nil
 				}
+				if model, _ := payload["model"].(string); model == "gpt-responses-fallback" {
+					if stream, _ := payload["stream"].(bool); stream {
+						rec.Header().Set("Content-Type", "text/event-stream")
+						_, _ = rec.WriteString("data: {\"id\":\"chatcmpl-fallback\",\"model\":\"gpt-responses-fallback\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+						_, _ = rec.WriteString("data: [DONE]\n\n")
+						return rec.Result(), nil
+					}
+					_ = json.NewEncoder(rec).Encode(map[string]any{
+						"id":     "chatcmpl-fallback",
+						"object": "chat.completion",
+						"model":  "gpt-responses-fallback",
+						"choices": []map[string]any{
+							{"message": map[string]string{"role": "assistant", "content": "fallback hello"}},
+						},
+					})
+					return rec.Result(), nil
+				}
 				if stream, _ := payload["stream"].(bool); stream {
 					rec.Header().Set("Content-Type", "text/event-stream")
 					_, _ = rec.WriteString("data: {\"id\":\"chunk-1\"}\n\n")
@@ -96,6 +117,13 @@ func TestRuntimeContract(t *testing.T) {
 				}
 				_ = json.NewEncoder(rec).Encode(map[string]any{"id": "chatcmpl-test", "object": "chat.completion"})
 			case "https://openai.example/v1/responses":
+				responsesHits["openai"]++
+				var payload map[string]any
+				_ = json.NewDecoder(req.Body).Decode(&payload)
+				if model, _ := payload["model"].(string); model == "gpt-responses-fallback" {
+					rec.WriteHeader(http.StatusNotFound)
+					return rec.Result(), nil
+				}
 				_ = json.NewEncoder(rec).Encode(map[string]any{"id": "resp-test", "object": "response"})
 			case "https://anthropic.example/v1/messages":
 				if req.Header.Get("x-request-id") != "trace-anthropic" {
@@ -223,7 +251,7 @@ func TestRuntimeContract(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("unexpected status: %d", rec.Code)
 		}
-		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"claude-3-haiku\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-upstream-error\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
+		if got := rec.Body.String(); got != "{\"data\":[{\"id\":\"claude-3-7-sonnet\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"claude-3-haiku\",\"object\":\"model\",\"owned_by\":\"anthropic-compatible\"},{\"id\":\"gpt-4.1-mini\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-upstream-error\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"},{\"id\":\"gpt-responses-fallback\",\"object\":\"model\",\"owned_by\":\"openai-compatible\"}]}\n" {
 			t.Fatalf("unexpected body: %q", got)
 		}
 	})
@@ -414,6 +442,58 @@ func TestRuntimeContract(t *testing.T) {
 		}
 	})
 
+	t.Run("responses falls back to chat completions", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-responses-fallback","instructions":"be brief","input":"hello","max_output_tokens":8}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		req.Header.Set("x-trace-id", "trace-openai")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if payload["object"] != "response" || payload["model"] != "gpt-responses-fallback" || payload["output_text"] != "fallback hello" {
+			t.Fatalf("unexpected responses payload: %+v", payload)
+		}
+		if responsesHits["openai"] != 1 {
+			t.Fatalf("expected one native responses probe, got %d", responsesHits["openai"])
+		}
+	})
+
+	t.Run("responses stream falls back to chat completions", func(t *testing.T) {
+		body := []byte(`{"model":"gpt-responses-fallback","stream":true,"input":"hello"}`)
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		req.Header.Set("x-trace-id", "trace-openai")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+			t.Fatalf("unexpected content-type: %s", got)
+		}
+		bodyText := rec.Body.String()
+		if !strings.Contains(bodyText, "event: response.output_text.delta") || !strings.Contains(bodyText, `"delta":"hello"`) {
+			t.Fatalf("unexpected stream body: %q", bodyText)
+		}
+		if !strings.Contains(bodyText, "event: response.output_text.done") || !strings.Contains(bodyText, `"text":"hello"`) {
+			t.Fatalf("missing output text done event: %q", bodyText)
+		}
+		if !strings.Contains(bodyText, "event: response.output_item.done") || !strings.Contains(bodyText, "event: response.completed") || !strings.Contains(bodyText, "data: [DONE]") {
+			t.Fatalf("missing completion events: %q", bodyText)
+		}
+		if responsesHits["openai"] != 1 {
+			t.Fatalf("expected cached adapter to skip native responses probe, got %d", responsesHits["openai"])
+		}
+	})
+
 	t.Run("anthropic stream", func(t *testing.T) {
 		body := []byte(`{"model":"claude-3-7-sonnet","stream":true,"messages":[{"role":"user","content":"hello"}],"max_tokens":128}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
@@ -449,6 +529,9 @@ func TestRuntimeContract(t *testing.T) {
 		}
 		if payload[0]["openai_chat_completions_status"] != "supported" {
 			t.Fatalf("unexpected openai dynamic status: %+v", payload[0])
+		}
+		if payload[0]["openai_responses_status"] != "adapted" {
+			t.Fatalf("unexpected openai responses status: %+v", payload[0])
 		}
 		if payload[0]["stream_status"] != "supported" {
 			t.Fatalf("unexpected openai stream status: %+v", payload[0])
