@@ -2,7 +2,6 @@ package inbound
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 
 	"github.com/yuanjunliang/ai-mini-gateway/internal/runtime/executor"
@@ -76,7 +75,7 @@ func RegisterAnthropic(mux *http.ServeMux, store *state.Store, proxy *executor.P
 }
 
 func decodeAnthropicMessageRequest(r *http.Request) ([]byte, anthropicMessageRequest, error) {
-	body, err := io.ReadAll(r.Body)
+	body, err := readDecodedRequestBody(r)
 	if err != nil {
 		return nil, anthropicMessageRequest{}, err
 	}
@@ -86,7 +85,7 @@ func decodeAnthropicMessageRequest(r *http.Request) ([]byte, anthropicMessageReq
 }
 
 func decodeAnthropicCountTokensRequest(r *http.Request) ([]byte, anthropicCountTokensRequest, error) {
-	body, err := io.ReadAll(r.Body)
+	body, err := readDecodedRequestBody(r)
 	if err != nil {
 		return nil, anthropicCountTokensRequest{}, err
 	}

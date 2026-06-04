@@ -100,6 +100,21 @@ func (p *Proxy) ForwardOperation(ctx context.Context, source state.ModelSource, 
 	return resp, nil
 }
 
+func (p *Proxy) ObserveOperationStatus(sourceID string, operation providers.Operation, status string) {
+	p.setOperationStatus(sourceID, operation, status)
+}
+
+func (p *Proxy) OperationStatus(sourceID string, operation providers.Operation) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	entry, ok := p.cache[sourceID]
+	if !ok || p.now().After(entry.expiresAt) || len(entry.operationStatus) == 0 {
+		return ""
+	}
+	return entry.operationStatus[operation]
+}
+
 func (p *Proxy) HealthcheckSource(ctx context.Context, source state.ModelSource) HealthcheckResult {
 	start := p.now()
 	result, err := p.doHealthcheck(ctx, source)
